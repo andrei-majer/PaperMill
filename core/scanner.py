@@ -396,7 +396,7 @@ def extract_pdf_metadata(pdf_path: Path) -> dict:
 
 
 def scan_metadata(meta: dict, source: str) -> ScanResult:
-    regex_backend = RegexBackend()
+    regex_backend = _get_regex_backend()
     threats = []
 
     for field_name, value in meta.items():
@@ -533,6 +533,19 @@ def quarantine_file(file_path: Path) -> Path:
             counter += 1
     shutil.move(str(file_path), str(dest))
     return dest
+
+
+# ── Allowlist ─────────────────────────────────────────────────────────────
+
+def load_allowlist() -> set:
+    """Load allowlisted file hashes."""
+    if not config.SCANNER_ALLOWLIST_PATH.exists():
+        return set()
+    try:
+        data = json.loads(config.SCANNER_ALLOWLIST_PATH.read_text(encoding="utf-8"))
+        return set(data.get("entries", {}).keys())
+    except (json.JSONDecodeError, IOError):
+        return set()
 
 
 # ── OCR Divergence Check ──────────────────────────────────────────────────
