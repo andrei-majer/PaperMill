@@ -105,14 +105,31 @@ class ScannerBackend:
         raise NotImplementedError
 
 
+def _make_super_cleaned_pattern(pattern: str) -> str:
+    """Convert a regex pattern to match super-cleaned (no-space, alphanumeric-only) text.
+
+    Removes literal spaces and optional-space constructs from the pattern so it
+    can match against text where all non-alphanumeric chars have been stripped.
+    """
+    # Remove literal spaces inside the pattern (not inside character classes)
+    # and collapse optional-space groups like '( )?' or '\s*'
+    p = pattern
+    p = re.sub(r" \?", "", p)          # remove optional spaces ` ?`
+    p = re.sub(r"\\s[*+?]?", "", p)    # remove \s \s* \s+ \s?
+    p = re.sub(r" ", "", p)             # remove remaining literal spaces
+    return p
+
+
 class RegexBackend(ScannerBackend):
     def __init__(self):
         self._rules = load_rules()
         self._compiled: list[dict] = []
         for rule in self._rules:
+            sc_pattern = _make_super_cleaned_pattern(rule["pattern"])
             self._compiled.append({
                 **rule,
                 "_re": re.compile(rule["pattern"], re.IGNORECASE),
+                "_re_sc": re.compile(sc_pattern, re.IGNORECASE),
             })
 
     def scan(self, text: str, source: str, location: str, scope: str = "document") -> BackendResult:
@@ -138,7 +155,7 @@ class RegexBackend(ScannerBackend):
                 continue
 
             if rule["severity"] == "high":
-                match_sc = rule["_re"].search(super_cleaned)
+                match_sc = rule["_re_sc"].search(super_cleaned)
                 if match_sc:
                     threats.append(Threat(
                         pattern_name=rule["id"],
