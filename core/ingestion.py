@@ -1,6 +1,7 @@
 """PDF ingestion pipeline: parse → chunk → embed → store."""
 
 import hashlib
+import logging
 import re
 from datetime import datetime, timezone
 from pathlib import Path
@@ -25,6 +26,10 @@ from core.scanner import (
     quarantine_file,
     ContentBlockedError,
 )
+
+logger = logging.getLogger(__name__)
+
+_DOI_RE = re.compile(r"\b(10\.\d{4,}/\S+)")
 
 
 def _estimate_tokens(text: str) -> int:
@@ -182,6 +187,54 @@ def _chunk_id(source_pdf: str, chunk_index: int) -> str:
     return hashlib.sha256(raw.encode()).hexdigest()[:16]
 
 
+def _extract_doi_from_metadata(meta: dict) -> str | None:
+    """Look for a DOI in PDF metadata fields.
+
+    Checks direct 'doi' key first, then scans 'Subject' and 'Keywords'
+    (and any XMP-style keys) for a DOI pattern.
+    """
+    # Direct key (case-insensitive search)
+    for key in meta:
+        if key.lower() == "doi":
+            value = str(meta[key]).strip()
+            if value:
+                # Strip common URL prefixes
+                value = value.removeprefix("https://doi.org/").removeprefix("http://doi.org/")
+                if _DOI_RE.search(value):
+                    return _DOI_RE.search(value).group(1)
+
+    # Scan string values of common fields and any XMP-style keys
+    scan_keys = {"subject", "keywords"}
+    for key, value in meta.items():
+        if key.lower() in scan_keys or key.lower().startswith("xmp"):
+            match = _DOI_RE.search(str(value))
+            if match:
+                return match.group(1)
+
+    return None
+
+
+def _try_add_doi_to_bibliography(doi: str, filename: str) -> None:
+    """Attempt to fetch DOI metadata and add it to the bibliography.
+
+    Failures are caught and logged as warnings so they never block ingestion.
+    Silently skips if the DOI is already present in the bibliography.
+    """
+    try:
+        from core.bibliography import add_reference
+        add_reference(doi=doi)
+        logger.info("Auto-extracted DOI %s from %s and added to bibliography", doi, filename)
+    except ValueError as exc:
+        # Covers duplicate DOI, invalid format, CrossRef 404/400
+        msg = str(exc)
+        if "already exists" in msg:
+            logger.debug("DOI %s from %s already in bibliography — skipping", doi, filename)
+        else:
+            logger.warning("Could not add DOI %s from %s to bibliography: %s", doi, filename, exc)
+    except Exception as exc:  # network errors, etc.
+        logger.warning("Failed to fetch metadata for DOI %s from %s: %s", doi, filename, exc)
+
+
 def is_already_ingested(pdf_path: Path) -> bool:
     """Check if a PDF has already been ingested by looking for its name in the DB."""
     table = get_or_create_table()
@@ -209,6 +262,8 @@ def ingest_pdf(pdf_path: Path, force: bool = False) -> int:
 
     # ── Scanner gate ─────────────────────────────────────────────────────
     file_hash = compute_file_hash(pdf_path)
+    chunks = None  # will be set during scan or after
+    doi_from_metadata: str | None = None  # tracks DOI found in PDF metadata
 
     # Check allowlist — skip scanning if file is explicitly allowed
     allowlist = load_allowlist()
@@ -236,23 +291,28 @@ def ingest_pdf(pdf_path: Path, force: bool = False) -> int:
             meta_result = scan_metadata(meta, pdf_path.name)
             scan_results.append(meta_result)
 
-            # 3. Chunk content scan (scan each chunk text)
-            chunks_for_scan = chunk_pdf(pdf_path)
-            for chunk in chunks_for_scan:
+            # Extract DOI from metadata while we have it
+            doi_from_metadata = _extract_doi_from_metadata(meta)
+
+            # 3. Chunk content scan — reuse chunks for embedding later
+            chunks = chunk_pdf(pdf_path)
+            llm_escalations_remaining = config.SCANNER_MAX_LLM_ESCALATIONS
+            for chunk in chunks:
                 chunk_result = scan_text(
                     chunk["text"],
                     source=pdf_path.name,
                     location=f"chunk:{chunk['chunk_index']}",
                     scope="document",
+                    _llm_budget=llm_escalations_remaining,
                 )
+                llm_escalations_remaining -= chunk_result.llm_escalations
                 scan_results.append(chunk_result)
 
             overall_safe = all(r.is_safe for r in scan_results)
-            result_str = "passed" if overall_safe else "blocked"
 
             if not overall_safe:
                 report_path = generate_report(scan_results, pdf_path.name, file_hash)
-                update_scan_history(file_hash, pdf_path.name, result_str, current_version, str(report_path))
+                update_scan_history(file_hash, pdf_path.name, "blocked", current_version, str(report_path))
 
                 if not config.SCANNER_DRY_RUN:
                     quarantine_file(pdf_path)
@@ -261,15 +321,31 @@ def ingest_pdf(pdf_path: Path, force: bool = False) -> int:
                         report_path=report_path,
                     )
             else:
-                report_path = generate_report(scan_results, pdf_path.name, file_hash)
-                update_scan_history(file_hash, pdf_path.name, result_str, current_version, str(report_path))
+                update_scan_history(file_hash, pdf_path.name, "passed", current_version)
+
+        else:
+            # Scan was skipped (cached pass) — still extract metadata for DOI
+            meta = extract_pdf_metadata(pdf_path)
+            doi_from_metadata = _extract_doi_from_metadata(meta)
 
     # ── Embed + store pipeline ────────────────────────────────────────────
 
-    # Parse and chunk
-    chunks = chunk_pdf(pdf_path)
+    # Reuse chunks from scan phase, or parse now if scan was skipped
+    if chunks is None:
+        chunks = chunk_pdf(pdf_path)
     if not chunks:
         return 0
+
+    # ── DOI auto-extraction ───────────────────────────────────────────────
+
+    if doi_from_metadata:
+        _try_add_doi_to_bibliography(doi_from_metadata, pdf_path.name)
+    else:
+        # Fallback: scan first-page text for a DOI pattern
+        first_page_text = chunks[0]["text"]
+        match = _DOI_RE.search(first_page_text)
+        if match:
+            _try_add_doi_to_bibliography(match.group(1), pdf_path.name)
 
     # Embed
     texts = [c["text"] for c in chunks]
@@ -290,6 +366,7 @@ def ingest_pdf(pdf_path: Path, force: bool = False) -> int:
             "section_hint": chunk["section_hint"],
             "ingested_at": now,
             "safety_flag": "",
+            "source_type": "pdf",
         })
 
     # Store

@@ -1,12 +1,15 @@
 """LLM generation with RAG context — supports Claude and Ollama."""
 
 import json
+import logging
 import time
+import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
 
+import config
 from config import (
-    LLM_PROVIDER, ANTHROPIC_API_KEY, DRAFT_MODEL, POLISH_MODEL, OLLAMA_URL,
+    ANTHROPIC_API_KEY, OLLAMA_URL,
     SCANNER_SCAN_CHAT_INPUT,
 )
 from core.prompts import (
@@ -23,6 +26,18 @@ from core.paper_structure import (
     load_section,
 )
 from core.bibliography import format_refs_for_prompt
+
+logger = logging.getLogger(__name__)
+
+
+def _get_model(role: str) -> str:
+    """Return the model name for *role* ('draft' or 'polish') based on the
+    current config.LLM_PROVIDER at call time, so runtime provider switches
+    are respected.
+    """
+    if config.LLM_PROVIDER == "ollama":
+        return config.OLLAMA_POLISH_MODEL if role == "polish" else config.OLLAMA_DRAFT_MODEL
+    return config.CLAUDE_POLISH_MODEL if role == "polish" else config.CLAUDE_DRAFT_MODEL
 
 
 @dataclass
@@ -41,7 +56,38 @@ class GenerationStats:
 
 def _generate(model: str, system: str, messages: list[dict], max_tokens: int = 4096) -> tuple[str, GenerationStats]:
     """Generate text using the configured LLM provider. Returns (text, stats)."""
-    if LLM_PROVIDER == "ollama":
+    # ── Fix 3: rough token guard ───────────────────────────────────────────
+    # Estimate ~4 chars per token as a conservative heuristic.
+    estimated_prompt_tokens = (
+        len(system) + sum(len(m.get("content", "")) for m in messages)
+    ) // 4
+    estimated_total = estimated_prompt_tokens + max_tokens
+    if estimated_total > config.MAX_CONTEXT_TOKENS:
+        logger.warning(
+            "Estimated context (%d tokens) exceeds MAX_CONTEXT_TOKENS (%d). "
+            "Truncating message content to fit.",
+            estimated_total,
+            config.MAX_CONTEXT_TOKENS,
+        )
+        # How many chars are available for message content after system + max_tokens headroom.
+        available_tokens = config.MAX_CONTEXT_TOKENS - max_tokens - len(system) // 4
+        available_chars = max(available_tokens * 4, 0)
+        truncated: list[dict] = []
+        remaining = available_chars
+        # Walk messages in reverse so the most-recent context is kept.
+        for msg in reversed(messages):
+            content = msg.get("content", "")
+            if remaining <= 0:
+                truncated.insert(0, {**msg, "content": ""})
+            elif len(content) <= remaining:
+                truncated.insert(0, msg)
+                remaining -= len(content)
+            else:
+                truncated.insert(0, {**msg, "content": content[:remaining]})
+                remaining = 0
+        messages = truncated
+
+    if config.LLM_PROVIDER == "ollama":
         return _generate_ollama(model, system, messages, max_tokens)
     return _generate_claude(model, system, messages, max_tokens)
 
@@ -92,16 +138,24 @@ def _generate_ollama(model: str, system: str, messages: list[dict], max_tokens: 
         },
     }).encode("utf-8")
 
+    url = f"{OLLAMA_URL}/api/chat"
     req = urllib.request.Request(
-        f"{OLLAMA_URL}/api/chat",
+        url,
         data=payload,
         headers={"Content-Type": "application/json"},
         method="POST",
     )
 
     t0 = time.perf_counter()
-    with urllib.request.urlopen(req, timeout=300) as resp:
-        data = json.loads(resp.read().decode("utf-8"))
+    try:
+        with urllib.request.urlopen(req, timeout=300) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        raise RuntimeError(f"Ollama returned HTTP {exc.code}") from exc
+    except urllib.error.URLError as exc:
+        raise RuntimeError(
+            f"Ollama unreachable at {url} — is it running? ({exc.reason})"
+        ) from exc
     elapsed = time.perf_counter() - t0
 
     text = data.get("message", {}).get("content", "")
@@ -165,9 +219,11 @@ def chat(
     input_warnings = scan_chat_input(message)
 
     context = format_chunks_as_context(chunks) if chunks else "No reference material available."
+    bib = format_refs_for_prompt() or "No bibliography entries yet."
 
     user_content = CHAT_CONTEXT_TEMPLATE.format(
         context=context,
+        bibliography=bib,
         question=message,
     )
 
@@ -176,7 +232,7 @@ def chat(
         messages.extend(history)
     messages.append({"role": "user", "content": user_content})
 
-    text, stats = _generate(DRAFT_MODEL, SYSTEM_PROMPT, messages, max_tokens=4096)
+    text, stats = _generate(_get_model("draft"), SYSTEM_PROMPT, messages, max_tokens=4096)
     return text, stats, input_warnings
 
 
@@ -200,7 +256,7 @@ def draft_section(
         target_length=target_words,
     )
 
-    text, stats = _generate(DRAFT_MODEL, SYSTEM_PROMPT, [{"role": "user", "content": prompt}], max_tokens=8192)
+    text, stats = _generate(_get_model("draft"), SYSTEM_PROMPT, [{"role": "user", "content": prompt}], max_tokens=8192)
 
     save_section(section_id, title, text, status="draft")
     return text, stats
@@ -229,7 +285,7 @@ def rewrite_section(
         bibliography=bib,
     )
 
-    text, stats = _generate(POLISH_MODEL, SYSTEM_PROMPT, [{"role": "user", "content": prompt}], max_tokens=8192)
+    text, stats = _generate(_get_model("polish"), SYSTEM_PROMPT, [{"role": "user", "content": prompt}], max_tokens=8192)
 
     save_section(section_id, title, text, status="review")
     return text, stats

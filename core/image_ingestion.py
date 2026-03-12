@@ -227,6 +227,7 @@ def ingest_image(image_path: Path, force: bool = False) -> int:
         "section_hint": f"image:{image_path.stem}",
         "ingested_at": now,
         "safety_flag": "",
+        "source_type": "image",
     }
 
     table = get_or_create_table()

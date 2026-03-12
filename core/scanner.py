@@ -284,7 +284,19 @@ def _get_ollama_backend() -> OllamaClassifierBackend:
     return _ollama_backend
 
 
-def scan_text(text: str, source: str, location: str, regex_only: bool = False, scope: str = "document") -> ScanResult:
+def scan_text(
+    text: str,
+    source: str,
+    location: str,
+    regex_only: bool = False,
+    scope: str = "document",
+    _llm_budget: int | None = None,
+) -> ScanResult:
+    """Run the scanner pipeline on a text chunk.
+
+    _llm_budget: remaining LLM escalations allowed for this file.
+        None means use the global max. 0 or negative means skip LLM.
+    """
     regex_result = _get_regex_backend().scan(text, source, location, scope=scope)
 
     all_threats = list(regex_result.threats)
@@ -303,10 +315,12 @@ def scan_text(text: str, source: str, location: str, regex_only: bool = False, s
     heuristic_result = _get_heuristic_backend().scan(text, source, location, scope=scope)
 
     llm_escalations = 0
+    budget = _llm_budget if _llm_budget is not None else config.SCANNER_MAX_LLM_ESCALATIONS
 
     if (
         config.SCANNER_LLM_ESCALATION
         and heuristic_result.suspicion_score > config.SCANNER_SUSPICION_THRESHOLD
+        and budget > 0
     ):
         llm_result = _get_ollama_backend().scan(text, source, location, scope=scope)
         all_threats.extend(llm_result.threats)
@@ -546,6 +560,71 @@ def load_allowlist() -> set:
         return set(data.get("entries", {}).keys())
     except (json.JSONDecodeError, IOError):
         return set()
+
+
+def add_to_allowlist(file_hash: str, filename: str, reason: str) -> None:
+    """Add a file hash to the scanner allowlist."""
+    lock = FileLock(str(config.SCANNER_ALLOWLIST_PATH) + ".lock")
+    with lock:
+        data = {"description": "Pre-approved file hashes that skip scanning", "entries": {}}
+        if config.SCANNER_ALLOWLIST_PATH.exists():
+            try:
+                data = json.loads(config.SCANNER_ALLOWLIST_PATH.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, IOError):
+                pass
+        data.setdefault("entries", {})[file_hash] = {
+            "filename": filename,
+            "added": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+            "reason": reason,
+        }
+        config.SCANNER_ALLOWLIST_PATH.write_text(json.dumps(data, indent=2), encoding="utf-8")
+
+
+def remove_from_allowlist(file_hash: str) -> bool:
+    """Remove a hash from the allowlist. Returns True if found and removed."""
+    lock = FileLock(str(config.SCANNER_ALLOWLIST_PATH) + ".lock")
+    with lock:
+        if not config.SCANNER_ALLOWLIST_PATH.exists():
+            return False
+        try:
+            data = json.loads(config.SCANNER_ALLOWLIST_PATH.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, IOError):
+            return False
+        if file_hash in data.get("entries", {}):
+            del data["entries"][file_hash]
+            config.SCANNER_ALLOWLIST_PATH.write_text(json.dumps(data, indent=2), encoding="utf-8")
+            return True
+        return False
+
+
+def quarantine_release(file_hash: str) -> Path:
+    """Release a file from quarantine: restore, allowlist, and return path."""
+    history = load_scan_history()
+    if file_hash not in history:
+        raise ValueError(f"Hash {file_hash[:16]}... not found in scan history")
+
+    entry = history[file_hash]
+    filename = entry["filename"]
+
+    quarantine_path = config.QUARANTINE_DIR / filename
+    if not quarantine_path.exists():
+        for f in config.QUARANTINE_DIR.iterdir():
+            if f.stem.startswith(Path(filename).stem):
+                quarantine_path = f
+                break
+    if not quarantine_path.exists():
+        raise FileNotFoundError(f"File not found in quarantine: {filename}")
+
+    from config import PDF_DIR, DATA_DIR
+    if quarantine_path.suffix.lower() == ".pdf":
+        dest = PDF_DIR / filename
+    else:
+        dest = DATA_DIR / "images" / filename
+
+    shutil.move(str(quarantine_path), str(dest))
+    add_to_allowlist(file_hash, filename, "Released from quarantine by user")
+    update_scan_history(file_hash, filename, "released", load_rules_version())
+    return dest
 
 
 # ── OCR Divergence Check ──────────────────────────────────────────────────

@@ -1,6 +1,7 @@
 """Streamlit web interface for the RAG Paper Writing Assistant."""
 
 import sys
+import json
 from pathlib import Path
 
 # Add project root to path
@@ -8,7 +9,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import streamlit as st
 import config
-from config import PDF_DIR, DATA_DIR, VERSIONS_DIR
+from config import PDF_DIR, DATA_DIR, VERSIONS_DIR, REPORTS_DIR, CHAT_HISTORY_PATH
+from core.scanner import (
+    load_rules, ContentBlockedError, load_scan_history,
+    add_to_allowlist, remove_from_allowlist, quarantine_release, compute_file_hash,
+)
 from core.ingestion import ingest_pdf
 from core.image_ingestion import ingest_image, ingest_images_dir, IMAGE_EXTENSIONS
 from core.retrieval import search
@@ -26,16 +31,45 @@ st.set_page_config(
     layout="wide",
 )
 
+# ── Chat history helpers ───────────────────────────────────────────────────
+
+def _save_chat_history(history: list[dict]) -> None:
+    """Write chat history to CHAT_HISTORY_PATH as JSON."""
+    try:
+        CHAT_HISTORY_PATH.parent.mkdir(parents=True, exist_ok=True)
+        CHAT_HISTORY_PATH.write_text(
+            json.dumps(history, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+    except Exception:
+        pass
+
+
+def _load_chat_history() -> list[dict]:
+    """Load chat history from CHAT_HISTORY_PATH; return [] if missing or corrupt."""
+    try:
+        if CHAT_HISTORY_PATH.exists():
+            data = json.loads(CHAT_HISTORY_PATH.read_text(encoding="utf-8"))
+            if isinstance(data, list):
+                return data
+    except Exception:
+        pass
+    return []
+
+
 # ── Session State ──────────────────────────────────────────────────────────
 if "messages" not in st.session_state:
-    st.session_state.messages = []
-if "chat_history" not in st.session_state:
+    # Reconstruct display messages from persisted history
+    loaded = _load_chat_history()
+    st.session_state.messages = loaded
+    st.session_state.chat_history = loaded
+elif "chat_history" not in st.session_state:
     st.session_state.chat_history = []
 
 # ── Sidebar ────────────────────────────────────────────────────────────────
 with st.sidebar:
-    st.title("Paper Assistant")
-    st.caption("CRA Compliance Toolkit for SMEs")
+    st.title("PaperMill")
+    st.caption("AI-Powered Academic Writing Assistant")
 
     # ── LLM Provider ─────────────────────────────────────────────────────
     providers = ["ollama", "claude"]
@@ -166,12 +200,16 @@ with st.sidebar:
         if not save_path.exists():
             save_path.write_bytes(uploaded_file.getvalue())
         if st.button("Ingest uploaded PDF", key="ingest_btn"):
-            with st.spinner(f"Ingesting {uploaded_file.name}..."):
-                count = ingest_pdf(save_path)
-            if count > 0:
-                st.success(f"Ingested {count} chunks from {uploaded_file.name}")
-            else:
-                st.info("Already ingested.")
+            with st.spinner(f"Scanning & ingesting {uploaded_file.name}..."):
+                try:
+                    count = ingest_pdf(save_path)
+                    if count > 0:
+                        st.success(f"Ingested {count} chunks from {uploaded_file.name}")
+                    else:
+                        st.info("Already ingested.")
+                except ContentBlockedError as e:
+                    st.error(f"BLOCKED: {e}")
+                    st.warning(f"Report: {e.report_path}")
 
     # ── Images & Screenshots ──────────────────────────────────────────────
     st.subheader("Images & Screenshots")
@@ -189,15 +227,19 @@ with st.sidebar:
             img_path.write_bytes(uploaded_img.getvalue())
         st.image(img_path, caption=uploaded_img.name, width=200)
         if st.button("Ingest image", key="ingest_img_btn"):
-            with st.spinner(f"Describing & indexing {uploaded_img.name}..."):
-                count = ingest_image(img_path)
-            if count > 0:
-                st.success(f"Indexed {uploaded_img.name}")
-            else:
-                st.info("Already ingested.")
+            with st.spinner(f"Scanning & indexing {uploaded_img.name}..."):
+                try:
+                    count = ingest_image(img_path)
+                    if count > 0:
+                        st.success(f"Indexed {uploaded_img.name}")
+                    else:
+                        st.info("Already ingested.")
+                except ContentBlockedError as e:
+                    st.error(f"BLOCKED: {e}")
+                    st.warning(f"Report: {e.report_path}")
 
     if st.button("Ingest all images", key="ingest_all_imgs_btn"):
-        with st.spinner("Describing & indexing all images..."):
+        with st.spinner("Scanning & indexing all images..."):
             results = ingest_images_dir(IMAGES_DIR)
         st.success(f"Ingested: {results['ingested']}, Skipped: {results['skipped']}")
         for err in results["errors"]:
@@ -216,6 +258,44 @@ with st.sidebar:
                 delete_source(src)
                 st.rerun()
 
+    st.divider()
+
+    # ── Content Scanner ──────────────────────────────────────────────────
+    st.subheader("Content Scanner")
+
+    with st.expander("Active Rules", expanded=False):
+        rules = load_rules()
+        for r in rules:
+            severity_icon = "\U0001f534" if r["severity"] == "high" else "\U0001f7e1"
+            st.caption(f"{severity_icon} **{r['id']}** [{r['category']}] {r['description']}")
+
+    with st.expander("Scan Reports", expanded=False):
+        report_files = sorted(REPORTS_DIR.glob("*.md"), reverse=True)[:10]
+        if report_files:
+            for rf in report_files:
+                st.caption(f"\U0001f4c4 {rf.name}")
+                if st.button("View", key=f"view_{rf.name}"):
+                    st.code(rf.read_text(encoding="utf-8"), language="markdown")
+        else:
+            st.caption("No reports yet.")
+
+    with st.expander("Quarantine", expanded=False):
+        history = load_scan_history()
+        blocked = {k: v for k, v in history.items() if v["result"] == "blocked"}
+        if blocked:
+            for h, entry in blocked.items():
+                col1, col2 = st.columns([3, 1])
+                col1.caption(f"\U0001f6ab {entry['filename']} ({h[:12]}...)")
+                if col2.button("Release", key=f"release_{h[:12]}"):
+                    try:
+                        dest = quarantine_release(h)
+                        st.success(f"Released {entry['filename']} to {dest}")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(str(e))
+        else:
+            st.caption("No quarantined files.")
+
 # ── Main Area: Section Viewer + Chat ──────────────────────────────────────
 tab_chat, tab_section = st.tabs(["Chat", "Section Viewer"])
 
@@ -231,8 +311,14 @@ with tab_section:
             st.info(f"Section '{selected['id']}' has not been drafted yet.")
 
 with tab_chat:
-    st.markdown("### Research Chat")
-    st.caption("Ask questions about your reference materials. Responses include source citations.")
+    _ch_col1, _ch_col2 = st.columns([6, 1])
+    _ch_col1.markdown("### Research Chat")
+    _ch_col1.caption("Ask questions about your reference materials. Responses include source citations.")
+    if _ch_col2.button("Clear History", key="clear_history_btn"):
+        st.session_state.messages = []
+        st.session_state.chat_history = []
+        _save_chat_history([])
+        st.rerun()
 
     # Display chat history
     for msg in st.session_state.messages:
@@ -278,3 +364,4 @@ with tab_chat:
         st.session_state.messages.append({"role": "assistant", "content": response_text})
         st.session_state.chat_history.append({"role": "user", "content": prompt})
         st.session_state.chat_history.append({"role": "assistant", "content": response_text})
+        _save_chat_history(st.session_state.chat_history)

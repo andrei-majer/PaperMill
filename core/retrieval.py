@@ -5,8 +5,8 @@ from datetime import datetime, timezone
 
 import config
 from core.embedder import embed_query
-from core.db import get_or_create_table, tag_chunk_flagged
-from core.scanner import scan_text, Threat
+from core.db import get_or_create_table, tag_chunk_flagged, _sql_escape
+from core.scanner import scan_text, load_scan_history, load_rules_version, Threat
 
 logger = logging.getLogger(__name__)
 
@@ -54,12 +54,19 @@ def search(
     # Build search — filter out flagged chunks
     results = table.search(query_vec).limit(top_k)
 
-    # Exclude chunks previously flagged by the scanner
-    safety_filter = "safety_flag = '' OR safety_flag IS NULL"
-    if source_filter:
-        results = results.where(f"source_pdf = '{source_filter}' AND ({safety_filter})")
-    else:
-        results = results.where(safety_filter)
+    # Check if table schema has safety_flag column (may be absent in legacy tables)
+    has_safety_flag = "safety_flag" in table.schema.names
+
+    if has_safety_flag:
+        safety_filter = "safety_flag = '' OR safety_flag IS NULL"
+        if source_filter:
+            escaped_filter = _sql_escape(source_filter)
+            results = results.where(f"source_pdf = '{escaped_filter}' AND ({safety_filter})")
+        else:
+            results = results.where(safety_filter)
+    elif source_filter:
+        escaped_filter = _sql_escape(source_filter)
+        results = results.where(f"source_pdf = '{escaped_filter}'")
 
     df = results.to_pandas()
 
@@ -79,8 +86,24 @@ def search(
         })
 
     # ── Retrieval-time scanner gate (regex only) ──────────────────────────
+    # Skip re-scanning sources that were scanned with the current rule version
+    try:
+        history = load_scan_history()
+        current_version = load_rules_version()
+        _up_to_date_sources = {
+            v["filename"] for v in history.values()
+            if v.get("pattern_version") == current_version and v.get("result") == "passed"
+        }
+    except Exception:
+        _up_to_date_sources = set()
+
     safe_chunks = []
     for chunk in chunks:
+        # Skip scan if source was already scanned with current rules
+        if chunk["source_pdf"] in _up_to_date_sources:
+            safe_chunks.append(chunk)
+            continue
+
         result = scan_text(
             chunk["text"],
             source=chunk["source_pdf"],
@@ -94,7 +117,10 @@ def search(
                 tag_chunk_flagged(chunk["source_pdf"], chunk["chunk_index"])
             except Exception as e:
                 logger.warning("Failed to tag chunk in DB: %s", e)
-            _log_retrieval_flag(query, chunk, result.threats)
+            try:
+                _log_retrieval_flag(query, chunk, result.threats)
+            except Exception as e:
+                logger.warning("Failed to write retrieval flag log: %s", e)
             logger.warning(
                 "Retrieval-time flag: %s chunk:%s — %s",
                 chunk["source_pdf"],

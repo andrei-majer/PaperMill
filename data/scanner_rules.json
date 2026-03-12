@@ -1,0 +1,125 @@
+{
+  "pattern_version": "1.0",
+  "rules": [
+    {
+      "id": "role_hijack_01",
+      "category": "role_hijack",
+      "severity": "high",
+      "scope": "all",
+      "pattern": "ignore (all |any )?(previous|prior|above) (instructions|prompts|rules|context)",
+      "description": "Attempts to override system instructions"
+    },
+    {
+      "id": "role_hijack_02",
+      "category": "role_hijack",
+      "severity": "high",
+      "scope": "all",
+      "pattern": "(you are|you're) now (a |an )?",
+      "description": "Role reassignment attempt"
+    },
+    {
+      "id": "role_hijack_03",
+      "category": "role_hijack",
+      "severity": "high",
+      "scope": "all",
+      "pattern": "(forget|disregard|drop) (your |all )?(instructions|rules|guidelines|training)",
+      "description": "Instruction erasure attempt"
+    },
+    {
+      "id": "role_hijack_04",
+      "category": "role_hijack",
+      "severity": "high",
+      "scope": "all",
+      "pattern": "new (role|persona|identity|instructions?):",
+      "description": "Role redefinition via label"
+    },
+    {
+      "id": "system_leak_01",
+      "category": "system_prompt_leak",
+      "severity": "high",
+      "scope": "all",
+      "pattern": "(print|show|reveal|output|display|repeat|echo) (your |the )?(system prompt|instructions|rules|configuration|initial prompt)",
+      "description": "System prompt extraction"
+    },
+    {
+      "id": "system_leak_02",
+      "category": "system_prompt_leak",
+      "severity": "high",
+      "scope": "all",
+      "pattern": "what (are|were) (your|the) (instructions|rules|guidelines|system prompt)",
+      "description": "System prompt interrogation"
+    },
+    {
+      "id": "delimiter_01",
+      "category": "delimiter_injection",
+      "severity": "high",
+      "scope": "all",
+      "pattern": "<\\|im_(start|end)\\|>",
+      "description": "ChatML delimiter injection"
+    },
+    {
+      "id": "delimiter_02",
+      "category": "delimiter_injection",
+      "severity": "high",
+      "scope": "all",
+      "pattern": "\\[INST\\]|\\[/INST\\]|<<SYS>>|<</SYS>>",
+      "description": "Llama-style delimiter injection"
+    },
+    {
+      "id": "delimiter_03",
+      "category": "delimiter_injection",
+      "severity": "medium",
+      "scope": "all",
+      "pattern": "<\\|?(system|assistant|user)\\|?>",
+      "description": "Generic role delimiter injection"
+    },
+    {
+      "id": "override_01",
+      "category": "instruction_override",
+      "severity": "high",
+      "scope": "all",
+      "pattern": "(IMPORTANT|CRITICAL|URGENT|NOTE):\\s*(you must|disregard|ignore|override|do not follow)",
+      "description": "Urgency-based instruction override"
+    },
+    {
+      "id": "override_02",
+      "category": "instruction_override",
+      "severity": "medium",
+      "scope": "all",
+      "pattern": "do not follow (the |any )?(previous|prior|above|original)",
+      "description": "Instruction negation"
+    },
+    {
+      "id": "exfil_01",
+      "category": "exfiltration",
+      "severity": "high",
+      "scope": "document",
+      "pattern": "(send|post|transmit|forward|exfiltrate) .{0,40}(to |at )(https?://|http://|ftp://)",
+      "description": "URL exfiltration attempt"
+    },
+    {
+      "id": "exfil_02",
+      "category": "exfiltration",
+      "severity": "high",
+      "scope": "document",
+      "pattern": "(api[_ ]?key|secret|token|password|credential)s?.{0,20}(send|post|leak|share|output)",
+      "description": "Credential exfiltration"
+    },
+    {
+      "id": "exfil_03",
+      "category": "exfiltration",
+      "severity": "medium",
+      "scope": "document",
+      "pattern": "(curl|wget|fetch|requests?\\.get|urllib)\\s",
+      "description": "Network request in document text"
+    },
+    {
+      "id": "exfil_04",
+      "category": "exfiltration",
+      "severity": "high",
+      "scope": "document",
+      "pattern": "webhook|callback.{0,20}url|ngrok|burp",
+      "description": "Exfiltration infrastructure references"
+    }
+  ]
+}

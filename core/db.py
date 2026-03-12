@@ -4,6 +4,11 @@ import lancedb
 from lancedb.pydantic import LanceModel, Vector
 from config import LANCEDB_DIR, LANCE_TABLE_NAME, EMBEDDING_DIM
 
+
+def _sql_escape(s: str) -> str:
+    """Escape single quotes in a string for use in SQL WHERE clauses."""
+    return s.replace("'", "''")
+
 _db: lancedb.DBConnection | None = None
 
 
@@ -19,6 +24,7 @@ class ChunkRecord(LanceModel):
     section_hint: str = ""           # detected heading
     ingested_at: str                 # ISO timestamp
     safety_flag: str = ""            # "flagged" if scanner blocked, "" otherwise
+    source_type: str = "pdf"         # "pdf" or "image"
 
 
 def get_db() -> lancedb.DBConnection:
@@ -32,7 +38,7 @@ def get_db() -> lancedb.DBConnection:
 def get_or_create_table() -> lancedb.table.Table:
     """Open the chunks table, creating it if it doesn't exist."""
     db = get_db()
-    existing = db.table_names()
+    existing = db.list_tables()
     if LANCE_TABLE_NAME in existing:
         return db.open_table(LANCE_TABLE_NAME)
     return db.create_table(LANCE_TABLE_NAME, schema=ChunkRecord)
@@ -53,8 +59,10 @@ def list_sources() -> list[str]:
 def tag_chunk_flagged(source_pdf: str, chunk_index: int) -> None:
     """Mark a specific chunk as flagged by the content scanner."""
     table = get_or_create_table()
+    if "safety_flag" not in table.schema.names:
+        return  # Legacy table without safety_flag column — skip silently
     table.update(
-        where=f"source_pdf = '{source_pdf}' AND chunk_index = {chunk_index}",
+        where=f"source_pdf = '{_sql_escape(source_pdf)}' AND chunk_index = {chunk_index}",
         values={"safety_flag": "flagged"},
     )
 
@@ -62,17 +70,9 @@ def tag_chunk_flagged(source_pdf: str, chunk_index: int) -> None:
 def delete_source(source_name: str) -> int:
     """Delete all chunks from a given source PDF. Returns count deleted."""
     table = get_or_create_table()
-    df = table.to_pandas()
-    mask = df["source_pdf"] == source_name
-    count = int(mask.sum())
-    if count == 0:
+    escaped = _sql_escape(source_name)
+    count_before = table.count_rows(filter=f"source_pdf = '{escaped}'")
+    if count_before == 0:
         return 0
-    remaining = df[~mask]
-    # Recreate the table with remaining rows
-    db = get_db()
-    db.drop_table(LANCE_TABLE_NAME)
-    if remaining.empty:
-        db.create_table(LANCE_TABLE_NAME, schema=ChunkRecord)
-    else:
-        db.create_table(LANCE_TABLE_NAME, data=remaining)
-    return count
+    table.delete(where=f"source_pdf = '{escaped}'")
+    return count_before

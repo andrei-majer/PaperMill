@@ -7,7 +7,12 @@ from pathlib import Path
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from config import PDF_DIR, DATA_DIR
+import json
+from config import PDF_DIR, DATA_DIR, CHAT_HISTORY_PATH
+from core.scanner import (
+    load_rules, ContentBlockedError, load_scan_history,
+    add_to_allowlist, remove_from_allowlist, quarantine_release, compute_file_hash,
+)
 from core.ingestion import ingest_pdf, is_already_ingested
 from core.image_ingestion import ingest_image, ingest_images_dir, IMAGE_EXTENSIONS
 from core.retrieval import search
@@ -23,6 +28,32 @@ from core.docexport import export_full_paper, export_section
 from core.versioning import save_version, list_versions, compare_versions
 from core.bibliography import add_reference, remove_reference, list_references, format_apa
 from config import VERSIONS_DIR
+
+
+# ── Chat history persistence ───────────────────────────────────────────────
+
+def _save_chat_history(history: list[dict]) -> None:
+    """Write chat history to CHAT_HISTORY_PATH as JSON."""
+    try:
+        CHAT_HISTORY_PATH.parent.mkdir(parents=True, exist_ok=True)
+        CHAT_HISTORY_PATH.write_text(
+            json.dumps(history, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+    except Exception as exc:
+        print(f"  [Warning] Could not save chat history: {exc}")
+
+
+def _load_chat_history() -> list[dict]:
+    """Load chat history from CHAT_HISTORY_PATH; return [] if missing or corrupt."""
+    try:
+        if CHAT_HISTORY_PATH.exists():
+            data = json.loads(CHAT_HISTORY_PATH.read_text(encoding="utf-8"))
+            if isinstance(data, list):
+                return data
+    except Exception:
+        pass
+    return []
 
 
 def print_help():
@@ -44,6 +75,11 @@ Commands:
   /ref-add <DOI>         Add a reference by DOI (auto-fetches metadata)
   /refs                  List all bibliography entries
   /ref-remove <key>      Remove a reference by citation key or DOI
+  /scan-rules            List active scanner rules
+  /allowlist-add <path>  Add file to scanner allowlist
+  /allowlist-remove <hash> Remove hash from allowlist
+  /quarantine-release [hash] Release quarantined file (no args = list)
+  /clear-history         Clear chat history (file + in-memory)
   /help                  Show this help
   /quit                  Exit
 
@@ -60,11 +96,15 @@ def cmd_ingest(args: str):
             print(f"File not found: {path}")
             return
         print(f"Ingesting {path.name}...")
-        count = ingest_pdf(path, force=False)
-        if count == 0:
-            print(f"  Already ingested (use force to re-ingest).")
-        else:
-            print(f"  Ingested {count} chunks.")
+        try:
+            count = ingest_pdf(path, force=False)
+            if count == 0:
+                print(f"  Already ingested (use force to re-ingest).")
+            else:
+                print(f"  Ingested {count} chunks.")
+        except ContentBlockedError as e:
+            print(f"  BLOCKED: {e}")
+            print(f"  Report: {e.report_path}")
     else:
         pdfs = list(PDF_DIR.glob("*.pdf"))
         if not pdfs:
@@ -72,11 +112,15 @@ def cmd_ingest(args: str):
             return
         for pdf in pdfs:
             print(f"Ingesting {pdf.name}...")
-            count = ingest_pdf(pdf, force=False)
-            if count == 0:
-                print(f"  Already ingested.")
-            else:
-                print(f"  Ingested {count} chunks.")
+            try:
+                count = ingest_pdf(pdf, force=False)
+                if count == 0:
+                    print(f"  Already ingested.")
+                else:
+                    print(f"  Ingested {count} chunks.")
+            except ContentBlockedError as e:
+                print(f"  BLOCKED: {e}")
+                print(f"  Report: {e.report_path}")
 
 
 def cmd_ingest_images(args: str):
@@ -280,6 +324,58 @@ def cmd_ref_remove(args: str):
         print(f"Reference '{key}' not found.")
 
 
+def cmd_scan_rules():
+    """List active scanner rules."""
+    rules = load_rules()
+    print(f"\nScanner Rules ({len(rules)} active):")
+    print("-" * 70)
+    print(f"  {'ID':<20} {'Category':<22} {'Severity':<8} Description")
+    print("-" * 70)
+    for r in rules:
+        print(f"  {r['id']:<20} {r['category']:<22} {r['severity']:<8} {r['description']}")
+
+
+def cmd_allowlist_add(args: str):
+    """Add a file to the scanner allowlist by path."""
+    path = Path(args.strip())
+    if not path.exists():
+        print(f"File not found: {path}")
+        return
+    file_hash = compute_file_hash(path)
+    add_to_allowlist(file_hash, path.name, "Manually allowlisted via CLI")
+    print(f"Added {path.name} to allowlist (hash: {file_hash[:16]}...)")
+
+
+def cmd_allowlist_remove(args: str):
+    """Remove a hash from the scanner allowlist."""
+    h = args.strip()
+    if remove_from_allowlist(h):
+        print(f"Removed {h[:16]}... from allowlist.")
+    else:
+        print(f"Hash not found in allowlist.")
+
+
+def cmd_quarantine_release_cmd(args: str):
+    """Release a file from quarantine."""
+    h = args.strip()
+    if not h:
+        history = load_scan_history()
+        blocked = {k: v for k, v in history.items() if v["result"] == "blocked"}
+        if not blocked:
+            print("No quarantined files.")
+            return
+        print("Quarantined files:")
+        for k, v in blocked.items():
+            print(f"  {k[:16]}... — {v['filename']} ({v.get('last_seen', 'unknown')})")
+        print("\nUsage: /quarantine-release <hash>")
+        return
+    try:
+        dest = quarantine_release(h)
+        print(f"Released to {dest}. Added to allowlist. Ready for re-ingestion.")
+    except (ValueError, FileNotFoundError) as e:
+        print(f"Error: {e}")
+
+
 def handle_chat(message: str, history: list[dict]):
     """Handle free-text chat with RAG."""
     print("Searching references...")
@@ -294,21 +390,23 @@ def handle_chat(message: str, history: list[dict]):
     print(response)
     print(f"\n  [{stats.provider}:{stats.model} | {stats.tokens_per_sec} tok/s | {stats.completion_tokens} tokens | {stats.elapsed_sec}s]")
 
-    # Update history
+    # Update history and persist
     history.append({"role": "user", "content": message})
     history.append({"role": "assistant", "content": response})
+    _save_chat_history(history)
     return history
 
 
 def run():
     """Main REPL loop."""
     print("=" * 60)
-    print("  RAG Paper Writing Assistant")
-    print("  Paper: Developing a CRA Compliance Toolkit for SMEs")
+    print("  PaperMill — AI-Powered Academic Writing Assistant")
     print("=" * 60)
     print("Type /help for commands, or ask a question.\n")
 
-    history: list[dict] = []
+    history: list[dict] = _load_chat_history()
+    if history:
+        print(f"  Loaded {len(history) // 2} previous exchange(s) from history.\n")
 
     while True:
         try:
@@ -360,6 +458,18 @@ def run():
                 cmd_refs()
             elif cmd == "/ref-remove":
                 cmd_ref_remove(args)
+            elif cmd == "/scan-rules":
+                cmd_scan_rules()
+            elif cmd == "/allowlist-add":
+                cmd_allowlist_add(args)
+            elif cmd == "/allowlist-remove":
+                cmd_allowlist_remove(args)
+            elif cmd == "/quarantine-release":
+                cmd_quarantine_release_cmd(args)
+            elif cmd == "/clear-history":
+                history = []
+                _save_chat_history(history)
+                print("Chat history cleared.")
             else:
                 print(f"Unknown command: {cmd}. Type /help for available commands.")
         else:

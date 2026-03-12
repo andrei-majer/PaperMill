@@ -16,6 +16,9 @@ def test_tag_chunk_flagged_updates_record(monkeypatch):
     import core.db as db_module
 
     mock_table = MagicMock()
+    mock_table.schema.names = ["id", "vector", "text", "source_pdf", "page_start",
+                               "page_end", "chunk_index", "section_hint",
+                               "ingested_at", "safety_flag"]
     monkeypatch.setattr(db_module, "get_or_create_table", lambda: mock_table)
 
     from core.db import tag_chunk_flagged
