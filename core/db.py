@@ -38,7 +38,7 @@ def get_db() -> lancedb.DBConnection:
 def get_or_create_table() -> lancedb.table.Table:
     """Open the chunks table, creating it if it doesn't exist."""
     db = get_db()
-    existing = db.list_tables()
+    existing = db.table_names()
     if LANCE_TABLE_NAME in existing:
         return db.open_table(LANCE_TABLE_NAME)
     return db.create_table(LANCE_TABLE_NAME, schema=ChunkRecord)
