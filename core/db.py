@@ -2,7 +2,8 @@
 
 import lancedb
 from lancedb.pydantic import LanceModel, Vector
-from config import LANCEDB_DIR, LANCE_TABLE_NAME, EMBEDDING_DIM
+import config
+from config import LANCEDB_DIR, LANCE_TABLE_NAME
 
 
 def _sql_escape(s: str) -> str:
@@ -13,19 +14,24 @@ _db: lancedb.DBConnection | None = None
 _migrated: bool = False
 
 
-class ChunkRecord(LanceModel):
-    """Schema for a document chunk stored in LanceDB."""
-    id: str                          # sha256(source_pdf + chunk_index)
-    vector: Vector(1024)             # jina-embeddings-v3 output
-    text: str                        # chunk text
-    source_pdf: str                  # filename
-    page_start: int
-    page_end: int
-    chunk_index: int
-    section_hint: str = ""           # detected heading
-    ingested_at: str                 # ISO timestamp
-    safety_flag: str = ""            # "flagged" if scanner blocked, "" otherwise
-    source_type: str = "pdf"         # "pdf" or "image"
+def make_chunk_record(dim: int) -> type:
+    """Factory that returns a LanceModel subclass with the given vector dimension."""
+    class _ChunkRecord(LanceModel):
+        id: str
+        vector: Vector(dim)
+        text: str
+        source_pdf: str
+        page_start: int
+        page_end: int
+        chunk_index: int
+        section_hint: str = ""
+        ingested_at: str
+        safety_flag: str = ""
+        source_type: str = "pdf"
+    return _ChunkRecord
+
+
+ChunkRecord = make_chunk_record(config.EMBEDDING_DIM)
 
 
 def get_db() -> lancedb.DBConnection:
@@ -68,6 +74,8 @@ def get_or_create_table() -> lancedb.table.Table:
 
     Automatically migrates old tables that are missing newer columns.
     """
+    global ChunkRecord
+    ChunkRecord = make_chunk_record(config.EMBEDDING_DIM)
     db = get_db()
     existing = db.table_names()
     if LANCE_TABLE_NAME in existing:
@@ -78,6 +86,15 @@ def get_or_create_table() -> lancedb.table.Table:
             _migrated = True
         return table
     return db.create_table(LANCE_TABLE_NAME, schema=ChunkRecord)
+
+
+def wipe_table() -> None:
+    """Drop the chunks table entirely and reset migration state."""
+    global _migrated
+    db = get_db()
+    if LANCE_TABLE_NAME in db.table_names():
+        db.drop_table(LANCE_TABLE_NAME)
+    _migrated = False
 
 
 def list_sources() -> list[str]:

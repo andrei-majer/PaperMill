@@ -96,14 +96,15 @@ with st.sidebar:
         section[data-testid="stSidebar"] h1,
         section[data-testid="stSidebar"] h2,
         section[data-testid="stSidebar"] h3 {font-size: 16px !important;}
+        section[data-testid="stSidebar"] > div:first-child {padding-top: 0;}
+        section[data-testid="stSidebar"] [data-testid="stSidebarContent"] {padding-top: 0;}
     </style>""", unsafe_allow_html=True)
-    st.markdown('<p style="font-size:16px; font-weight:bold; margin-bottom:0;">PaperMill</p>', unsafe_allow_html=True)
+    st.markdown('<p style="font-size:24px; font-weight:bold; margin-bottom:0;">PaperMill</p>', unsafe_allow_html=True)
     st.caption("AI-Powered Academic Writing Assistant")
 
     # ━━ Settings ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    with st.expander("Settings", expanded=False):
+    with st.expander("LLM Settings", expanded=False):
         # ── LLM Provider ─────────────────────────────────────────────
-        st.markdown("**LLM Provider**")
         providers = ["ollama", "lmstudio", "claude", "openai", "openrouter"]
         _provider_labels = {
             "ollama": "Local Ollama",
@@ -191,50 +192,135 @@ with st.sidebar:
             else:
                 st.warning("LM Studio not reachable — is it running on localhost:1234?")
 
-        st.markdown("---")
+        # ── Embedding Settings ─────────────────────────────────────────
+        st.markdown("**Embedding**")
+        _embed_providers = ["local", "ollama", "openai"]
+        _embed_labels = {
+            "local": "Local (sentence-transformers)",
+            "ollama": "Ollama",
+            "openai": "OpenAI",
+        }
+        _embed_idx = _embed_providers.index(config.EMBEDDING_PROVIDER) if config.EMBEDDING_PROVIDER in _embed_providers else 0
+        _sel_embed_provider = st.selectbox(
+            "Embedding Provider",
+            _embed_providers,
+            index=_embed_idx,
+            key="embed_provider",
+            format_func=lambda p: _embed_labels.get(p, p),
+        )
 
-        # ── Paper & Export ────────────────────────────────────────────
-        st.markdown("**Paper & Export**")
-        new_title = st.text_input("Paper Title", value=config.PAPER_TITLE, key="cfg_title")
-        _font_options = [
-            "Times New Roman", "Arial", "Calibri", "Cambria",
-            "Garamond", "Georgia", "Palatino Linotype", "Book Antiqua",
-            "Century Schoolbook", "Courier New", "Verdana", "Tahoma",
+        # ── Model selection per provider ──────────────────────────────
+        _embed_key = ""
+        _popular_local = [
+            "jinaai/jina-embeddings-v3",
+            "BAAI/bge-large-en-v1.5",
+            "sentence-transformers/all-MiniLM-L6-v2",
+            "nomic-ai/nomic-embed-text-v1.5",
         ]
-        _font_idx = _font_options.index(config.DOCX_FONT) if config.DOCX_FONT in _font_options else 0
-        new_font = st.selectbox("Font", _font_options, index=_font_idx, key="cfg_font")
-        new_font_size = st.number_input("Font Size (pt)", value=config.DOCX_FONT_SIZE_PT, min_value=8, max_value=24, step=1, key="cfg_font_size")
-        new_line_spacing = st.number_input("Line Spacing", value=config.DOCX_LINE_SPACING, min_value=1.0, max_value=3.0, step=0.25, key="cfg_spacing")
-        new_margin = st.number_input("Margins (inches)", value=config.DOCX_MARGIN_INCHES, min_value=0.5, max_value=2.0, step=0.25, key="cfg_margin")
 
-        if st.button("Save Settings", key="save_settings_btn", use_container_width=True):
-            updates = {
-                "paper_title": new_title,
-                "docx_font": new_font,
-                "docx_font_size": int(new_font_size),
-                "docx_line_spacing": float(new_line_spacing),
-                "docx_margin_inches": float(new_margin),
+        if _sel_embed_provider == "local":
+            _local_idx = _popular_local.index(config.EMBEDDING_MODEL) if config.EMBEDDING_MODEL in _popular_local else 0
+            _sel_embed_model = st.selectbox("Embedding Model", _popular_local, index=_local_idx, key="embed_model_local")
+            _custom_embed = st.text_input("Or custom HuggingFace model ID", key="embed_custom_local", placeholder="org/model-name")
+            if _custom_embed.strip():
+                _sel_embed_model = _custom_embed.strip()
+
+        elif _sel_embed_provider == "ollama":
+            @st.cache_data(ttl=30)
+            def _fetch_ollama_embed_models():
+                import urllib.request as _ur
+                try:
+                    with _ur.urlopen(f"{config.OLLAMA_URL}/api/tags", timeout=5) as resp:
+                        data = json.loads(resp.read().decode("utf-8"))
+                    return sorted([m["name"] for m in data.get("models", [])])
+                except Exception:
+                    return []
+
+            _ollama_embed_models = _fetch_ollama_embed_models()
+            st.caption("Select an embedding model (e.g. nomic-embed-text, mxbai-embed-large)")
+            if _ollama_embed_models:
+                _oll_idx = _ollama_embed_models.index(config.EMBEDDING_MODEL) if config.EMBEDDING_MODEL in _ollama_embed_models else 0
+                _sel_embed_model = st.selectbox("Embedding Model", _ollama_embed_models, index=_oll_idx, key="embed_model_ollama")
+            else:
+                _sel_embed_model = config.EMBEDDING_MODEL
+                st.warning("Ollama not reachable")
+            _custom_ollama = st.text_input("Or custom model name", key="embed_custom_ollama", placeholder="nomic-embed-text")
+            if _custom_ollama.strip():
+                _sel_embed_model = _custom_ollama.strip()
+
+        elif _sel_embed_provider == "openai":
+            _openai_models = ["text-embedding-3-small", "text-embedding-3-large"]
+            _oai_idx = _openai_models.index(config.EMBEDDING_MODEL) if config.EMBEDDING_MODEL in _openai_models else 0
+            _sel_embed_model = st.selectbox("Embedding Model", _openai_models, index=_oai_idx, key="embed_model_openai")
+            _embed_key = st.text_input(
+                "Embedding API Key (optional, uses OpenAI key if empty)",
+                value=config.EMBEDDING_API_KEY,
+                key="embed_api_key",
+                type="password",
+            )
+        else:
+            _sel_embed_model = config.EMBEDDING_MODEL
+
+        if st.button("Save Embedding Settings", key="save_embed_btn", use_container_width=True):
+            _embed_updates = {
+                "embedding_provider": _sel_embed_provider,
+                "embedding_model": _sel_embed_model,
             }
-            save_settings(updates)
-            config.PAPER_TITLE = new_title
-            config.DOCX_FONT = new_font
-            config.DOCX_FONT_SIZE_PT = int(new_font_size)
-            config.DOCX_LINE_SPACING = float(new_line_spacing)
-            config.DOCX_MARGIN_INCHES = float(new_margin)
-            st.success("Settings saved!")
+            if _sel_embed_provider == "openai":
+                _embed_updates["embedding_api_key"] = _embed_key
+            save_settings(_embed_updates)
+            config.EMBEDDING_PROVIDER = _sel_embed_provider
+            config.EMBEDDING_MODEL = _sel_embed_model
+            if _sel_embed_provider == "openai":
+                config.EMBEDDING_API_KEY = _embed_key
+            st.success("Embedding settings saved!")
             st.rerun()
 
-        st.markdown("---")
+        # ── Stale vector warning ──────────────────────────────────────
+        _current_embed_key = f"{config.EMBEDDING_PROVIDER}:{config.EMBEDDING_MODEL}"
+        if config.LAST_EMBEDDING_MODEL and config.LAST_EMBEDDING_MODEL != _current_embed_key:
+            from core.db import list_sources as _list_embed_sources
+            if _list_embed_sources():
+                st.warning("Embedding model changed. Re-ingest sources for accurate results.")
+
+        if st.button("Re-ingest All Sources", key="reingest_all_btn", use_container_width=True):
+            st.session_state["confirm_reingest"] = True
+            st.rerun()
+
+        if st.session_state.get("confirm_reingest"):
+            _pdf_count = len(list(config.PDF_DIR.glob("*.pdf")))
+            st.warning(f"This will re-process {_pdf_count} PDFs. Scanner checks will run again. Continue?")
+            _rc1, _rc2 = st.columns(2)
+            if _rc1.button("Confirm Re-ingest", key="confirm_reingest_btn", type="primary"):
+                st.session_state.pop("confirm_reingest", None)
+                from core.ingestion import reingest_all
+                _progress_bar = st.progress(0)
+                _progress_text = st.empty()
+
+                def _reingest_progress(current, total, filename):
+                    if total > 0:
+                        _progress_bar.progress(current / total)
+                    _progress_text.caption(f"Processing {filename}... ({current + 1}/{total})")
+
+                result = reingest_all(progress_callback=_reingest_progress)
+                _progress_bar.progress(1.0)
+                _progress_text.empty()
+                st.success(f"Re-ingested {result['ingested']} PDFs, {result['total_chunks']} chunks.")
+                if result["failed"]:
+                    for f in result["failed"]:
+                        st.error(f)
+                st.rerun()
+            if _rc2.button("Cancel", key="cancel_reingest_btn"):
+                st.session_state.pop("confirm_reingest", None)
+                st.rerun()
 
         # ── Prompt Settings (opens dialog) ────────────────────────────
-        if st.button("Edit Prompts", key="open_prompt_editor_btn", use_container_width=True):
+        if st.button("System Prompt Settings", key="open_prompt_editor_btn", use_container_width=True):
             st.session_state["show_prompt_editor"] = True
             st.rerun()
 
-        st.markdown("---")
-
-        # ── Paper Sections Manager ────────────────────────────────────
-        st.markdown("**Paper Sections Manager**")
+    # ━━ Paper Sections Manager ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    with st.expander("Paper Sections", expanded=False):
         outline = _load_outline()
 
         for i, (sid, title, words) in enumerate(outline):
@@ -250,7 +336,6 @@ with st.sidebar:
                 remove_section(sid)
                 st.rerun()
 
-        st.markdown("---")
         st.markdown("**Add Section**")
         ac1, ac2, ac3 = st.columns([2, 3, 1])
         new_sid = ac1.text_input("ID", placeholder="ch3.6", key="new_sec_id")
@@ -276,8 +361,6 @@ with st.sidebar:
             reset_outline()
             st.success("Outline reset to default.")
             st.rerun()
-
-    st.divider()
 
     # ━━ Write ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     st.subheader("Write")
@@ -365,7 +448,37 @@ with st.sidebar:
         else:
             col3.button("Undo", key="undo_btn", use_container_width=True, disabled=True)
 
-    st.divider()
+
+    # ━━ Paper & Export ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    with st.expander("Paper & Export", expanded=False):
+        new_title = st.text_input("Paper Title", value=config.PAPER_TITLE, key="cfg_title")
+        _font_options = [
+            "Times New Roman", "Arial", "Calibri", "Cambria",
+            "Garamond", "Georgia", "Palatino Linotype", "Book Antiqua",
+            "Century Schoolbook", "Courier New", "Verdana", "Tahoma",
+        ]
+        _font_idx = _font_options.index(config.DOCX_FONT) if config.DOCX_FONT in _font_options else 0
+        new_font = st.selectbox("Font", _font_options, index=_font_idx, key="cfg_font")
+        new_font_size = st.number_input("Font Size (pt)", value=config.DOCX_FONT_SIZE_PT, min_value=8, max_value=24, step=1, key="cfg_font_size")
+        new_line_spacing = st.number_input("Line Spacing", value=config.DOCX_LINE_SPACING, min_value=1.0, max_value=3.0, step=0.25, key="cfg_spacing")
+        new_margin = st.number_input("Margins (inches)", value=config.DOCX_MARGIN_INCHES, min_value=0.5, max_value=2.0, step=0.25, key="cfg_margin")
+
+        if st.button("Save Settings", key="save_settings_btn", use_container_width=True):
+            updates = {
+                "paper_title": new_title,
+                "docx_font": new_font,
+                "docx_font_size": int(new_font_size),
+                "docx_line_spacing": float(new_line_spacing),
+                "docx_margin_inches": float(new_margin),
+            }
+            save_settings(updates)
+            config.PAPER_TITLE = new_title
+            config.DOCX_FONT = new_font
+            config.DOCX_FONT_SIZE_PT = int(new_font_size)
+            config.DOCX_LINE_SPACING = float(new_line_spacing)
+            config.DOCX_MARGIN_INCHES = float(new_margin)
+            st.success("Settings saved!")
+            st.rerun()
 
     # ━━ Export & Versioning ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     st.subheader("Export & Versioning")
@@ -404,7 +517,6 @@ with st.sidebar:
                             key=f"dl_v{v['version']}",
                         )
 
-    st.divider()
 
     # ━━ Bibliography ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     st.subheader("Bibliography")
@@ -428,7 +540,6 @@ with st.sidebar:
                     remove_reference(r["key"])
                     st.rerun()
 
-    st.divider()
 
     # ━━ Add Sources ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     st.subheader("Add Sources")
@@ -513,7 +624,31 @@ with st.sidebar:
         for err in results["errors"]:
             st.error(err)
 
-    st.divider()
+
+    # ━━ Ingested Sources ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    sources = list_sources()
+    st.subheader(f"Ingested Sources ({len(sources)})")
+    if sources:
+        for src in sources:
+            col1, col2 = st.columns([3, 1])
+            col1.markdown(f"- {src}")
+            if col2.button("X", key=f"del_{src}", help=f"Delete {src}"):
+                st.session_state["confirm_delete_source"] = src
+
+        if "confirm_delete_source" in st.session_state:
+            _del_src = st.session_state["confirm_delete_source"]
+            st.warning(f"Delete **{_del_src}** from the vector DB? The file on disk will not be removed.")
+            cc1, cc2 = st.columns(2)
+            if cc1.button("Confirm Delete", key="confirm_del_src_btn", type="primary"):
+                delete_source(_del_src)
+                st.session_state.pop("confirm_delete_source", None)
+                st.success(f"Deleted {_del_src}")
+                st.rerun()
+            if cc2.button("Cancel", key="cancel_del_src_btn"):
+                st.session_state.pop("confirm_delete_source", None)
+                st.rerun()
+    else:
+        st.caption("No sources ingested yet.")
 
     # ━━ Content Scanner ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     st.subheader("Content Scanner")
@@ -569,34 +704,6 @@ with st.sidebar:
         else:
             st.caption("No quarantined files.")
 
-    st.divider()
-
-    # ━━ Ingested Sources (bottom) ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    sources = list_sources()
-    st.subheader(f"Ingested Sources ({len(sources)})")
-    if sources:
-        for src in sources:
-            col1, col2 = st.columns([3, 1])
-            col1.markdown(f"- {src}")
-            if col2.button("X", key=f"del_{src}", help=f"Delete {src}"):
-                st.session_state["confirm_delete_source"] = src
-
-        if "confirm_delete_source" in st.session_state:
-            _del_src = st.session_state["confirm_delete_source"]
-            st.warning(f"Delete **{_del_src}** from the vector DB? The file on disk will not be removed.")
-            cc1, cc2 = st.columns(2)
-            if cc1.button("Confirm Delete", key="confirm_del_src_btn", type="primary"):
-                delete_source(_del_src)
-                st.session_state.pop("confirm_delete_source", None)
-                st.success(f"Deleted {_del_src}")
-                st.rerun()
-            if cc2.button("Cancel", key="cancel_del_src_btn"):
-                st.session_state.pop("confirm_delete_source", None)
-                st.rerun()
-    else:
-        st.caption("No sources ingested yet.")
-
-    st.divider()
     st.caption("**PaperMill** v1.3 | [GitHub](https://github.com/cr231521/PaperMill) | CC BY-NC 4.0")
 
 

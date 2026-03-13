@@ -6,10 +6,10 @@ import re
 from datetime import datetime, timezone
 from pathlib import Path
 
-import fitz  # PyMuPDF
+import pdfplumber
 
 import config
-from config import CHUNK_SIZE_TOKENS, CHUNK_OVERLAP_TOKENS
+from config import CHUNK_SIZE_TOKENS, CHUNK_OVERLAP_TOKENS, save_settings
 from core.embedder import embed_passages
 from core.db import get_or_create_table, ChunkRecord
 from core.scanner import (
@@ -42,37 +42,55 @@ def _extract_pages(pdf_path: Path) -> list[dict]:
 
     Returns list of dicts: {page_num, text, blocks} where blocks have font info.
     """
-    doc = fitz.open(str(pdf_path))
     pages = []
-    for page_num, page in enumerate(doc, 1):
-        blocks = page.get_text("dict", flags=fitz.TEXT_PRESERVE_WHITESPACE)["blocks"]
-        page_text_parts = []
-        page_blocks = []
+    with pdfplumber.open(str(pdf_path)) as pdf:
+        for page_num, page in enumerate(pdf.pages, 1):
+            chars = page.chars or []
+            page_text_parts = []
+            page_blocks = []
 
-        for block in blocks:
-            if block.get("type") != 0:  # text blocks only
-                continue
-            for line in block.get("lines", []):
-                for span in line.get("spans", []):
-                    text = span.get("text", "").strip()
-                    if not text:
-                        continue
-                    font_size = span.get("size", 12)
-                    flags = span.get("flags", 0)
-                    is_bold = bool(flags & 2**4)  # bit 4 = bold
-                    page_blocks.append({
-                        "text": text,
-                        "font_size": font_size,
-                        "bold": is_bold,
-                    })
-                    page_text_parts.append(text)
+            # Group consecutive characters into text runs by font
+            current_text = []
+            current_size = None
+            current_bold = False
 
-        pages.append({
-            "page_num": page_num,
-            "text": " ".join(page_text_parts),
-            "blocks": page_blocks,
-        })
-    doc.close()
+            for ch in chars:
+                size = round(ch.get("size", 12), 1)
+                fontname = ch.get("fontname", "").lower()
+                bold = "bold" in fontname or "black" in fontname
+                text_char = ch.get("text", "")
+
+                if size != current_size or bold != current_bold:
+                    # Flush previous run
+                    run_text = "".join(current_text).strip()
+                    if run_text and current_size is not None:
+                        page_blocks.append({
+                            "text": run_text,
+                            "font_size": current_size,
+                            "bold": current_bold,
+                        })
+                        page_text_parts.append(run_text)
+                    current_text = [text_char]
+                    current_size = size
+                    current_bold = bold
+                else:
+                    current_text.append(text_char)
+
+            # Flush last run
+            run_text = "".join(current_text).strip()
+            if run_text and current_size is not None:
+                page_blocks.append({
+                    "text": run_text,
+                    "font_size": current_size,
+                    "bold": current_bold,
+                })
+                page_text_parts.append(run_text)
+
+            pages.append({
+                "page_num": page_num,
+                "text": " ".join(page_text_parts),
+                "blocks": page_blocks,
+            })
     return pages
 
 
@@ -372,4 +390,53 @@ def ingest_pdf(pdf_path: Path, force: bool = False) -> int:
     # Store
     table = get_or_create_table()
     table.add(records)
+
+    # Track which embedding model built these vectors
+    _model_key = f"{config.EMBEDDING_PROVIDER}:{config.EMBEDDING_MODEL}"
+    if config.LAST_EMBEDDING_MODEL != _model_key:
+        save_settings({"last_embedding_model": _model_key})
+        config.LAST_EMBEDDING_MODEL = _model_key
+
     return len(records)
+
+
+def reingest_all(progress_callback=None) -> dict:
+    """Wipe vector DB and re-ingest all PDFs from data/pdfs/.
+
+    Args:
+        progress_callback: Optional callable(current, total, filename) for progress.
+
+    Returns dict with keys: ingested, failed, total_chunks.
+    """
+    from core.db import wipe_table
+    from core.embedder import detect_and_save_dim
+
+    # Detect and persist embedding dimension before wiping
+    detect_and_save_dim()
+
+    wipe_table()
+
+    pdf_files = sorted(config.PDF_DIR.glob("*.pdf"))
+    total = len(pdf_files)
+    ingested = 0
+    total_chunks = 0
+    failed = []
+
+    for i, pdf_path in enumerate(pdf_files):
+        if progress_callback:
+            progress_callback(i, total, pdf_path.name)
+        try:
+            count = ingest_pdf(pdf_path, force=True)
+            if count > 0:
+                ingested += 1
+                total_chunks += count
+        except Exception as e:
+            failed.append(f"{pdf_path.name}: {e}")
+            logger.warning("Re-ingestion failed for %s: %s", pdf_path.name, e)
+
+    # Update last_embedding_model to current
+    model_key = f"{config.EMBEDDING_PROVIDER}:{config.EMBEDDING_MODEL}"
+    save_settings({"last_embedding_model": model_key})
+    config.LAST_EMBEDDING_MODEL = model_key
+
+    return {"ingested": ingested, "failed": failed, "total_chunks": total_chunks}

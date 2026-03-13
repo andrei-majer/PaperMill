@@ -45,6 +45,7 @@ def _reload_settings() -> None:
     """Refresh module-level config values from the settings file."""
     global _user_settings, PAPER_TITLE, DOCX_FONT, DOCX_FONT_SIZE_PT
     global DOCX_LINE_SPACING, DOCX_MARGIN_INCHES
+    global EMBEDDING_PROVIDER, EMBEDDING_MODEL, EMBEDDING_DIM, EMBEDDING_API_KEY, LAST_EMBEDDING_MODEL
     _user_settings = _load_settings()
     PAPER_TITLE = _user_settings.get(
         "paper_title",
@@ -57,6 +58,11 @@ def _reload_settings() -> None:
     DOCX_FONT_SIZE_PT = _user_settings.get("docx_font_size", 12)
     DOCX_LINE_SPACING = _user_settings.get("docx_line_spacing", 1.5)
     DOCX_MARGIN_INCHES = _user_settings.get("docx_margin_inches", 1.0)
+    EMBEDDING_PROVIDER = _user_settings.get("embedding_provider", "local")
+    EMBEDDING_MODEL = _user_settings.get("embedding_model", "jinaai/jina-embeddings-v3")
+    EMBEDDING_DIM = _user_settings.get("embedding_dim", 1024)
+    EMBEDDING_API_KEY = _user_settings.get("embedding_api_key", "")
+    LAST_EMBEDDING_MODEL = _user_settings.get("last_embedding_model", "")
 
 
 # ── Paper ─────────────────────────────────────────────────────────────────
@@ -76,8 +82,11 @@ for d in (PDF_DIR, LANCEDB_DIR, VERSIONS_DIR, SECTIONS_DIR):
 LANCE_TABLE_NAME = "chunks"
 
 # ── Embeddings ─────────────────────────────────────────────────────────────
-EMBEDDING_MODEL = "jinaai/jina-embeddings-v3"
-EMBEDDING_DIM = 1024
+EMBEDDING_PROVIDER = _user_settings.get("embedding_provider", "local")
+EMBEDDING_MODEL = _user_settings.get("embedding_model", "jinaai/jina-embeddings-v3")
+EMBEDDING_DIM = _user_settings.get("embedding_dim", 1024)
+EMBEDDING_API_KEY = _user_settings.get("embedding_api_key", "")
+LAST_EMBEDDING_MODEL = _user_settings.get("last_embedding_model", "")
 MAX_TOKEN_CTX = 8192
 
 # ── Chunking ──────────────────────────────────────────────────────────────
