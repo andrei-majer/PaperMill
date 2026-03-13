@@ -10,6 +10,7 @@ def _sql_escape(s: str) -> str:
     return s.replace("'", "''")
 
 _db: lancedb.DBConnection | None = None
+_migrated: bool = False
 
 
 class ChunkRecord(LanceModel):
@@ -35,12 +36,47 @@ def get_db() -> lancedb.DBConnection:
     return _db
 
 
+def _migrate_table(table: lancedb.table.Table) -> lancedb.table.Table:
+    """Add missing columns to an existing table to match ChunkRecord schema."""
+    import pyarrow as pa
+
+    existing_names = set(table.schema.names)
+    expected_fields = {
+        "safety_flag": pa.field("safety_flag", pa.utf8()),
+        "source_type": pa.field("source_type", pa.utf8()),
+    }
+    defaults = {"safety_flag": "", "source_type": "pdf"}
+
+    missing = {k: v for k, v in expected_fields.items() if k not in existing_names}
+    if not missing:
+        return table
+
+    # Add missing columns via update with default values
+    df = table.to_pandas()
+    for col, default in defaults.items():
+        if col not in df.columns:
+            df[col] = default
+
+    # Recreate table with full schema
+    db = get_db()
+    db.drop_table(LANCE_TABLE_NAME)
+    return db.create_table(LANCE_TABLE_NAME, data=df)
+
+
 def get_or_create_table() -> lancedb.table.Table:
-    """Open the chunks table, creating it if it doesn't exist."""
+    """Open the chunks table, creating it if it doesn't exist.
+
+    Automatically migrates old tables that are missing newer columns.
+    """
     db = get_db()
     existing = db.table_names()
     if LANCE_TABLE_NAME in existing:
-        return db.open_table(LANCE_TABLE_NAME)
+        table = db.open_table(LANCE_TABLE_NAME)
+        global _migrated
+        if not _migrated:
+            table = _migrate_table(table)
+            _migrated = True
+        return table
     return db.create_table(LANCE_TABLE_NAME, schema=ChunkRecord)
 
 

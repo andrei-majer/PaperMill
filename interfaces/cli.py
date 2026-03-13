@@ -16,7 +16,7 @@ from core.scanner import (
 from core.ingestion import ingest_pdf, is_already_ingested
 from core.image_ingestion import ingest_image, ingest_images_dir, IMAGE_EXTENSIONS
 from core.retrieval import search
-from core.generation import chat, draft_section, rewrite_section
+from core.generation import chat, draft_section, rewrite_section, _get_model
 from core.paper_structure import (
     PAPER_OUTLINE,
     list_sections_status,
@@ -66,7 +66,7 @@ Commands:
   /delete-source <name>  Delete a source from the vector DB
   /outline               Show paper outline with draft status
   /draft <id>            Draft a section (e.g. /draft ch1)
-  /rewrite <id>          Rewrite a section with Opus
+  /rewrite <id>          Rewrite a section with the polish model
   /show <id>             Show a section draft
   /export [id]           Export full paper or a section to .docx
   /version [label]       Save a versioned snapshot
@@ -204,7 +204,8 @@ def cmd_rewrite(args: str):
     if not section:
         print(f"No draft found for '{section_id}'. Draft it first with /draft {section_id}")
         return
-    print(f"Rewriting: {section['title']} (using Opus for polish)...")
+    import config as _cfg
+    print(f"Rewriting: {section['title']} (using {_cfg.LLM_PROVIDER}:{_get_model('polish')} for polish)...")
     chunks = search(section["title"], top_k=8)
     text, stats = rewrite_section(section_id, chunks=chunks)
     print(f"\n{'='*60}")

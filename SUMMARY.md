@@ -202,6 +202,8 @@ The paper outline contains 41 sections covering the full structure of the thesis
 >>> /show ch2.1                 # Read the generated draft
 ```
 
+**Draft** generates a section from scratch: it retrieves the top 12 most relevant chunks from your ingested references, combines them with your bibliography, and sends everything to the **draft model** (e.g., Ollama, Sonnet, GPT-4o). The result is saved with status `draft`.
+
 The system prompt enforces source-locked generation: every claim must be supported by retrieved chunks, no fabricated quotes, no decorative language. Findings are synthesized by theme with critical evaluation of conflicting sources.
 
 ### 7. Rewrite and Polish
@@ -212,6 +214,19 @@ Once a draft exists, rewrite it for improved quality using the polish model.
 >>> /rewrite ch2.1              # Polish with Opus/polish model
 >>> /show ch2.1                 # Review the improved version
 ```
+
+**Rewrite** takes the existing draft text and sends it to the **polish model** (e.g., Opus, GPT-4o) along with the top 8 RAG chunks for additional context. The model improves clarity, flow, and academic rigour. The result is saved with status `review`.
+
+### Draft vs Rewrite — Summary
+
+| Action | What it does | Model used | Input | Output status |
+|---|---|---|---|---|
+| **Draft** | Generates section from scratch using RAG context | Draft model | Section title + top 12 chunks | `draft` |
+| **Rewrite** | Improves existing text for clarity and rigour | Polish model | Current text + top 8 chunks | `review` |
+
+**Safety features:**
+- **Overwrite confirmation** — If a section already has content, both Draft and Rewrite show a warning and require explicit confirmation before proceeding (Streamlit UI)
+- **Undo** — Every Draft or Rewrite automatically backs up the previous version. Click Undo to restore it (one level of undo per section)
 
 ### 8. Export to Word Document
 
@@ -316,7 +331,7 @@ The web interface provides the same functionality with a visual layout:
   - PDF and image upload with ingestion
   - List of ingested sources (with delete buttons)
   - Paper sections dropdown showing draft status
-  - Draft and Rewrite buttons per section
+  - Draft, Rewrite, and Undo buttons per section (with overwrite confirmation)
   - Export to .docx with download
   - Version saving and download links
   - Bibliography management
@@ -345,7 +360,7 @@ The assistant includes a pre-configured 41-section outline (customisable in `cor
 | Ch 8 | Conclusion | 1,500 |
 | | References + Appendices | — |
 
-The outline can be customised by editing `core/paper_structure.py`.
+The outline can be customised via the **Settings > Paper Sections Manager** in the Streamlit sidebar, or by editing `core/paper_structure.py` directly. Changes are persisted to `data/settings.json`.
 
 ---
 
@@ -422,4 +437,6 @@ python -m pytest tests/ -v
 
 5. **Add DOIs early.** Use `/ref-add` to build your bibliography — the assistant will use proper APA citations with DOIs in all generated text.
 
-6. **Customise the outline.** Edit `core/paper_structure.py` to adjust section titles, IDs, and target word counts to match your exact paper structure.
+6. **Customise the outline.** Use the Settings panel in the Streamlit sidebar to add, remove, or reorder sections — or edit `core/paper_structure.py` directly.
+
+7. **Use Undo after Draft/Rewrite.** If a Draft or Rewrite produces poor results, click Undo to restore the previous version instantly.

@@ -28,7 +28,12 @@ def save_version(label: str = "") -> dict:
     """Export the current paper state as a versioned .docx and record in manifest."""
     now = datetime.now(timezone.utc)
     timestamp = now.strftime("%Y%m%d_%H%M%S")
+    import re as _re
     label_slug = label.replace(" ", "-").lower() if label else "snapshot"
+    # Strip unsafe chars from label to prevent path traversal / injection
+    label_slug = _re.sub(r'[^a-z0-9._-]', '', label_slug)[:60]
+    if not label_slug:
+        label_slug = "snapshot"
     filename = f"paper_{timestamp}_{label_slug}.docx"
     output_path = VERSIONS_DIR / filename
 

@@ -6,7 +6,10 @@ AI-powered academic writing assistant with a local-first RAG pipeline and built-
 - **PDF & Image Ingestion** — Parse PDFs with heading-aware chunking (PyMuPDF), describe images via Florence-2 (caption + OCR), embed everything with Jina Embeddings v3. DOIs are auto-extracted from PDF metadata and first-page text.
 - **Vector Search** — LanceDB-backed semantic search across all ingested documents
 - **RAG Chat** — Ask questions about your references with source citations and persistent chat history
-- **Section Drafting** — Draft and rewrite paper sections against a 41-section outline
+- **Section Drafting & Rewriting** — Draft sections from scratch using RAG context, rewrite them with a polish model, with overwrite confirmation and one-step undo
+- **Inline Section Editor** — Toggle Write mode in the Section Viewer to edit section content directly with Markdown, with save
+- **Word Count & Progress** — Per-section progress bar showing current/target words, line count, and estimated page count
+- **Citation Audit** — Expandable panel per section flagging unresolved `[Source: ...]` placeholders and citations missing from the bibliography
 - **Bibliography** — Auto-fetch metadata from CrossRef by DOI with retry logic, APA formatting, DOI validation
 - **Export** — Generate .docx files with academic formatting, page breaks between chapters, auto-generated References chapter with APA hanging indent, versioned snapshots
 - **Content Safety Scanner** — Defense-in-depth against prompt injection and exfiltration in ingested documents
@@ -21,8 +24,8 @@ AI-powered academic writing assistant with a local-first RAG pipeline and built-
 | Image Captioning | [Florence-2-large](https://huggingface.co/microsoft/Florence-2-large) (local GPU) |
 | Vector DB | [LanceDB](https://lancedb.com/) (local, serverless) |
 | PDF Parsing | [PyMuPDF](https://pymupdf.readthedocs.io/) |
-| LLM (default) | [Ollama](https://ollama.com/) — any local model |
-| LLM (alt) | Claude Sonnet / Opus via Anthropic API |
+| LLM (default) | [Ollama](https://ollama.com/) — any local model (auto-detected) |
+| LLM (alt) | [LM Studio](https://lmstudio.ai/) (auto-detected), Claude Sonnet / Opus, OpenAI GPT-4o, OpenRouter (Gemini, etc.), HuggingFace Inference Endpoints |
 | Doc Export | python-docx (Times New Roman 12pt, 1.5 spacing, 1" margins) |
 | Web UI | [Streamlit](https://streamlit.io/) |
 | Safety Scanner | Regex + heuristic + LLM classifier (pluggable backends) |
@@ -46,7 +49,8 @@ pip install -r requirements.txt
 ### Pull an Ollama model
 
 ```bash
-ollama pull dolphin-llama3
+ollama pull llama3.1
+ollama pull gemma3:12b
 ```
 
 ### Run
@@ -90,15 +94,31 @@ python run_streamlit.py
 
 Free text input triggers RAG-powered chat with source citations. Chat history persists across restarts.
 
+### Draft vs Rewrite
+
+| Action | What it does | Model used | Input | Output status |
+|---|---|---|---|---|
+| **Draft** | Generates a section from scratch using retrieved reference chunks and bibliography | Draft model (e.g., Ollama, Sonnet, GPT-4o) | Section title + top 12 RAG chunks | `draft` |
+| **Rewrite** | Takes the existing draft text and improves clarity, flow, and academic rigour | Polish model (e.g., Opus, GPT-4o) | Current section text + top 8 RAG chunks | `review` |
+
+**Safety features:**
+- **Overwrite confirmation** — If a section already has content, Draft and Rewrite show a warning and require explicit confirmation before proceeding
+- **Undo** — Every Draft or Rewrite backs up the previous version. Click Undo to restore it (one level of undo per section)
+
 ### Streamlit UI
 
 The web interface provides the same functionality with:
-- LLM provider switcher (Ollama / Claude) in the sidebar
+- LLM provider switcher (Ollama / LM Studio / Claude / OpenAI / OpenRouter) in the sidebar
+- Auto-detected model selection for Ollama and LM Studio (separate Draft / Polish dropdowns)
 - File upload for PDFs and images
-- Section drafting and rewriting
+- Section drafting, rewriting, and undo
 - Bibliography management
 - Content scanner dashboard (rules, reports, quarantine)
-- Performance stats after each generation
+- Performance stats after each generation (provider, model, tok/s, tokens, time, context size)
+- Inline section editor with Write mode toggle
+- Word count progress bar with line count and estimated page count
+- Citation audit per section
+- Single section .docx export
 
 ## Content Safety Scanner
 
@@ -190,8 +210,12 @@ Key settings in `config.py`:
 
 | Setting | Default | Description |
 |---|---|---|
-| `LLM_PROVIDER` | `ollama` | `ollama` or `claude` |
-| `OLLAMA_DRAFT_MODEL` | `dolphin-llama3:latest` | Model for drafting and chat |
+| `LLM_PROVIDER` | `ollama` | `ollama`, `lmstudio`, `claude`, `openai`, or `openrouter` |
+| `OLLAMA_DRAFT_MODEL` | `llama3.1:latest` | Ollama model for drafting and chat |
+| `OLLAMA_POLISH_MODEL` | `gemma3:12b` | Ollama model for rewriting |
+| `LMSTUDIO_URL` | `http://localhost:1234/v1` | LM Studio API endpoint |
+| `OPENAI_DRAFT_MODEL` | `gpt-4o` | OpenAI model for drafting |
+| `OPENROUTER_DRAFT_MODEL` | `google/gemini-2.5-flash-preview` | OpenRouter model for drafting |
 | `SCANNER_LLM_ESCALATION` | `True` | Enable LLM classifier escalation |
 | `SCANNER_SUSPICION_THRESHOLD` | `0.6` | Heuristic score to trigger LLM |
 | `SCANNER_MAX_LLM_ESCALATIONS` | `10` | Max LLM calls per file |

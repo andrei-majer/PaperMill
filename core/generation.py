@@ -1,7 +1,8 @@
-"""LLM generation with RAG context — supports Claude and Ollama."""
+"""LLM generation with RAG context — supports Ollama, Claude, OpenAI, and OpenRouter."""
 
 import json
 import logging
+import re
 import time
 import urllib.error
 import urllib.request
@@ -9,14 +10,11 @@ from dataclasses import dataclass, field
 
 import config
 from config import (
-    ANTHROPIC_API_KEY, OLLAMA_URL,
+    OLLAMA_URL,
     SCANNER_SCAN_CHAT_INPUT,
 )
 from core.prompts import (
-    SYSTEM_PROMPT,
-    SECTION_DRAFT_TEMPLATE,
-    REWRITE_TEMPLATE,
-    CHAT_CONTEXT_TEMPLATE,
+    get_prompt,
     format_chunks_as_context,
 )
 from core.paper_structure import (
@@ -35,9 +33,19 @@ def _get_model(role: str) -> str:
     current config.LLM_PROVIDER at call time, so runtime provider switches
     are respected.
     """
-    if config.LLM_PROVIDER == "ollama":
-        return config.OLLAMA_POLISH_MODEL if role == "polish" else config.OLLAMA_DRAFT_MODEL
-    return config.CLAUDE_POLISH_MODEL if role == "polish" else config.CLAUDE_DRAFT_MODEL
+    provider = config.LLM_PROVIDER
+    is_polish = role == "polish"
+    if provider == "ollama":
+        return config.OLLAMA_POLISH_MODEL if is_polish else config.OLLAMA_DRAFT_MODEL
+    if provider == "claude":
+        return config.CLAUDE_POLISH_MODEL if is_polish else config.CLAUDE_DRAFT_MODEL
+    if provider == "openai":
+        return config.OPENAI_POLISH_MODEL if is_polish else config.OPENAI_DRAFT_MODEL
+    if provider == "lmstudio":
+        return config.LMSTUDIO_POLISH_MODEL if is_polish else config.LMSTUDIO_DRAFT_MODEL
+    if provider == "openrouter":
+        return config.OPENROUTER_POLISH_MODEL if is_polish else config.OPENROUTER_DRAFT_MODEL
+    return config.OLLAMA_POLISH_MODEL if is_polish else config.OLLAMA_DRAFT_MODEL
 
 
 @dataclass
@@ -87,14 +95,38 @@ def _generate(model: str, system: str, messages: list[dict], max_tokens: int = 4
                 remaining = 0
         messages = truncated
 
-    if config.LLM_PROVIDER == "ollama":
+    provider = config.LLM_PROVIDER
+    if provider == "ollama":
         return _generate_ollama(model, system, messages, max_tokens)
-    return _generate_claude(model, system, messages, max_tokens)
+    if provider == "claude":
+        return _generate_claude(model, system, messages, max_tokens)
+    if provider == "lmstudio":
+        return _generate_openai_compat(
+            model, system, messages, max_tokens,
+            api_key="lm-studio",
+            base_url=config.LMSTUDIO_URL,
+            provider_name="lmstudio",
+        )
+    if provider == "openai":
+        return _generate_openai_compat(
+            model, system, messages, max_tokens,
+            api_key=config.OPENAI_API_KEY,
+            base_url=config.OPENAI_BASE_URL or None,
+            provider_name="openai",
+        )
+    if provider == "openrouter":
+        return _generate_openai_compat(
+            model, system, messages, max_tokens,
+            api_key=config.OPENROUTER_API_KEY,
+            base_url=config.OPENROUTER_BASE_URL,
+            provider_name="openrouter",
+        )
+    return _generate_ollama(model, system, messages, max_tokens)
 
 
 def _generate_claude(model: str, system: str, messages: list[dict], max_tokens: int) -> tuple[str, GenerationStats]:
     import anthropic
-    client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+    client = anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY)
 
     t0 = time.perf_counter()
     with client.messages.stream(
@@ -189,6 +221,54 @@ def _generate_ollama(model: str, system: str, messages: list[dict], max_tokens: 
     return text, stats
 
 
+def _generate_openai_compat(
+    model: str,
+    system: str,
+    messages: list[dict],
+    max_tokens: int,
+    *,
+    api_key: str,
+    base_url: str | None,
+    provider_name: str,
+) -> tuple[str, GenerationStats]:
+    """Generate via the OpenAI-compatible API (works for OpenAI, OpenRouter, etc.)."""
+    from openai import OpenAI
+
+    client_kwargs: dict = {"api_key": api_key}
+    if base_url:
+        client_kwargs["base_url"] = base_url
+    client = OpenAI(**client_kwargs)
+
+    oai_messages = [{"role": "system", "content": system}]
+    oai_messages.extend(messages)
+
+    t0 = time.perf_counter()
+    response = client.chat.completions.create(
+        model=model,
+        messages=oai_messages,
+        max_tokens=max_tokens,
+    )
+    elapsed = time.perf_counter() - t0
+
+    text = response.choices[0].message.content or ""
+    usage = response.usage
+    prompt_tokens = usage.prompt_tokens if usage else 0
+    completion_tokens = usage.completion_tokens if usage else 0
+    total = prompt_tokens + completion_tokens
+    tps = completion_tokens / elapsed if elapsed > 0 else 0
+
+    stats = GenerationStats(
+        provider=provider_name,
+        model=model,
+        prompt_tokens=prompt_tokens,
+        completion_tokens=completion_tokens,
+        total_tokens=total,
+        elapsed_sec=round(elapsed, 2),
+        tokens_per_sec=round(tps, 1),
+    )
+    return text, stats
+
+
 # ── Public API ────────────────────────────────────────────────────────────
 
 def scan_chat_input(message: str) -> list:
@@ -210,6 +290,7 @@ def chat(
     message: str,
     chunks: list[dict],
     history: list[dict] | None = None,
+    strip_citations: bool = True,
 ) -> tuple[str, GenerationStats, list]:
     """RAG-powered chat: answer a question using retrieved chunks.
 
@@ -218,12 +299,10 @@ def chat(
     """
     input_warnings = scan_chat_input(message)
 
-    context = format_chunks_as_context(chunks) if chunks else "No reference material available."
-    bib = format_refs_for_prompt() or "No bibliography entries yet."
+    context = format_chunks_as_context(chunks, for_chat=strip_citations) if chunks else "No reference material available."
 
-    user_content = CHAT_CONTEXT_TEMPLATE.format(
+    user_content = get_prompt("chat_context_template").format(
         context=context,
-        bibliography=bib,
         question=message,
     )
 
@@ -232,7 +311,15 @@ def chat(
         messages.extend(history)
     messages.append({"role": "user", "content": user_content})
 
-    text, stats = _generate(_get_model("draft"), SYSTEM_PROMPT, messages, max_tokens=4096)
+    system = get_prompt("chat_system_prompt") if strip_citations else get_prompt("system_prompt")
+    text, stats = _generate(_get_model("draft"), system, messages, max_tokens=4096)
+
+    if strip_citations:
+        # Post-process: strip inline [Source: ...] citations from the response body
+        text = re.sub(r'\s*\[Source:\s*[^\]]*\]', '', text)
+        # Also strip (Source: ...) variant
+        text = re.sub(r'\s*\(Source:\s*[^\)]*\)', '', text)
+
     return text, stats, input_warnings
 
 
@@ -247,7 +334,7 @@ def draft_section(
     context = format_chunks_as_context(chunks) if chunks else "No reference material available."
 
     bib = format_refs_for_prompt() or "No bibliography entries yet."
-    prompt = SECTION_DRAFT_TEMPLATE.format(
+    prompt = get_prompt("section_draft_template").format(
         section_name=title,
         section_id=section_id,
         instructions=instructions or "Write a comprehensive, well-structured section.",
@@ -256,7 +343,7 @@ def draft_section(
         target_length=target_words,
     )
 
-    text, stats = _generate(_get_model("draft"), SYSTEM_PROMPT, [{"role": "user", "content": prompt}], max_tokens=8192)
+    text, stats = _generate(_get_model("draft"), get_prompt("system_prompt"), [{"role": "user", "content": prompt}], max_tokens=8192)
 
     save_section(section_id, title, text, status="draft")
     return text, stats
@@ -276,7 +363,7 @@ def rewrite_section(
     context = format_chunks_as_context(chunks) if chunks else "No additional reference material."
 
     bib = format_refs_for_prompt() or "No bibliography entries yet."
-    prompt = REWRITE_TEMPLATE.format(
+    prompt = get_prompt("rewrite_template").format(
         section_name=title,
         section_id=section_id,
         instructions=instructions or "Improve clarity, flow, and academic rigour.",
@@ -285,7 +372,7 @@ def rewrite_section(
         bibliography=bib,
     )
 
-    text, stats = _generate(_get_model("polish"), SYSTEM_PROMPT, [{"role": "user", "content": prompt}], max_tokens=8192)
+    text, stats = _generate(_get_model("polish"), get_prompt("system_prompt"), [{"role": "user", "content": prompt}], max_tokens=8192)
 
     save_section(section_id, title, text, status="review")
     return text, stats

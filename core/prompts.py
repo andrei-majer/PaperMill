@@ -9,6 +9,9 @@ Your primary goal is to synthesize information from the provided context into ri
 peer-review-quality output.
 
 ### SOURCE CONSTRAINTS
+- **No External Sources:** Do NOT use any external sources, web searches, or outside knowledge. \
+Only use the reference material and bibliography provided in this prompt. If information is not \
+present in the provided context, do not supplement it from your training data or any other source.
 - **Source Locking:** Only use information provided in the retrieved chunks. If a concept is \
 not explicitly supported by the context, state: "Information not available in provided sources" \
 rather than inferring or generating filler.
@@ -90,31 +93,78 @@ APA citations where a matching bibliography entry exists. Preserve valid citatio
 new ones where appropriate.
 """
 
+CHAT_SYSTEM_PROMPT = f"""\
+You are an expert Academic Research Assistant helping with a paper titled \
+"{config.PAPER_TITLE}". \
+Answer questions using ONLY the provided reference material.
+
+Write answers as clean, flowing prose. Do NOT include any citations, source references, \
+filenames, or page numbers in the text. Write naturally as an expert explaining the topic.
+If information is not in the provided material, say so. Do NOT make things up.
+"""
+
 CHAT_CONTEXT_TEMPLATE = """\
 The user is asking a question related to the paper. Use the reference chunks below to inform your answer.
 
-**Reference Chunks:**
+**Reference Material:**
 {context}
 
-**Bibliography:**
-{bibliography}
-
 **User Question:** {question}
-
-Answer thoroughly, citing sources with [Source: filename, p. X]. When relevant, include DOI references from the bibliography.
 """
 
 
-def format_chunks_as_context(chunks: list[dict]) -> str:
-    """Format retrieved chunks into a context string for prompts."""
+# ── Prompt name → default value mapping ───────────────────────────────────
+_PROMPT_DEFAULTS: dict[str, str] = {
+    "system_prompt": SYSTEM_PROMPT,
+    "section_draft_template": SECTION_DRAFT_TEMPLATE,
+    "rewrite_template": REWRITE_TEMPLATE,
+    "chat_system_prompt": CHAT_SYSTEM_PROMPT,
+    "chat_context_template": CHAT_CONTEXT_TEMPLATE,
+}
+
+# Human-friendly labels for the UI
+PROMPT_LABELS: dict[str, str] = {
+    "system_prompt": "System Prompt (Drafting)",
+    "section_draft_template": "Section Draft Template",
+    "rewrite_template": "Rewrite Template",
+    "chat_system_prompt": "System Prompt (Chat)",
+    "chat_context_template": "Chat Context Template",
+}
+
+
+def get_prompt(name: str) -> str:
+    """Return the prompt for *name*, using a user override from settings if available."""
+    settings = config._load_settings()
+    custom = settings.get("prompts", {}).get(name)
+    if custom is not None:
+        return custom
+    return _PROMPT_DEFAULTS.get(name, "")
+
+
+def get_default_prompt(name: str) -> str:
+    """Return the built-in default prompt for *name* (ignoring user overrides)."""
+    return _PROMPT_DEFAULTS.get(name, "")
+
+
+def format_chunks_as_context(chunks: list[dict], for_chat: bool = False) -> str:
+    """Format retrieved chunks into a context string for prompts.
+
+    When for_chat=True, source metadata is stripped so the model cannot inline citations.
+    """
+    import re
     parts = []
     for i, c in enumerate(chunks, 1):
-        source = c.get("source_pdf", "unknown")
-        pages = f"pp. {c.get('page_start', '?')}-{c.get('page_end', '?')}"
-        heading = c.get("section_hint", "")
-        header = f"[Chunk {i} | {source}, {pages}]"
-        if heading:
-            header += f" ({heading})"
         text = c.get("text", "").replace("```", "~~~")
-        parts.append(f"{header}\n```text\n{text}\n```")
+        if for_chat:
+            # Strip any [Source: ...] references from chunk text
+            text = re.sub(r'\[Source:\s*[^\]]*\]', '', text)
+            parts.append(f"```text\n{text}\n```")
+        else:
+            source = c.get("source_pdf", "unknown")
+            pages = f"pp. {c.get('page_start', '?')}-{c.get('page_end', '?')}"
+            heading = c.get("section_hint", "")
+            header = f"[Ref {i} | {source}, {pages}]"
+            if heading:
+                header += f" ({heading})"
+            parts.append(f"{header}\n```text\n{text}\n```")
     return "\n\n---\n\n".join(parts)

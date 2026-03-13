@@ -21,6 +21,7 @@ venv/
 .venv/
 dist/
 build/
+docs/
 
 # Environment / secrets
 .env
@@ -29,6 +30,9 @@ credentials.*
 
 # Chat history (user data)
 data/chat_history.json
+
+# Project notes
+TODO.md
 
 # OS
 .DS_Store

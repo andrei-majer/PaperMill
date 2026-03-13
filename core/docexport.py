@@ -6,10 +6,8 @@ from docx import Document
 from docx.shared import Pt, Inches
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 
-from config import (
-    DOCX_FONT, DOCX_FONT_SIZE_PT, DOCX_LINE_SPACING, DOCX_MARGIN_INCHES,
-)
-from core.paper_structure import PAPER_OUTLINE, load_section
+import config
+from core.paper_structure import _load_outline, load_section
 from core.bibliography import list_references, format_apa
 
 
@@ -20,20 +18,20 @@ def _create_base_document() -> Document:
     # Set default font
     style = doc.styles["Normal"]
     font = style.font
-    font.name = DOCX_FONT
-    font.size = Pt(DOCX_FONT_SIZE_PT)
+    font.name = config.DOCX_FONT
+    font.size = Pt(config.DOCX_FONT_SIZE_PT)
 
     # Set paragraph spacing
     pf = style.paragraph_format
-    pf.line_spacing = DOCX_LINE_SPACING
+    pf.line_spacing = config.DOCX_LINE_SPACING
     pf.space_after = Pt(0)
 
     # Set margins
     for section in doc.sections:
-        section.top_margin = Inches(DOCX_MARGIN_INCHES)
-        section.bottom_margin = Inches(DOCX_MARGIN_INCHES)
-        section.left_margin = Inches(DOCX_MARGIN_INCHES)
-        section.right_margin = Inches(DOCX_MARGIN_INCHES)
+        section.top_margin = Inches(config.DOCX_MARGIN_INCHES)
+        section.bottom_margin = Inches(config.DOCX_MARGIN_INCHES)
+        section.left_margin = Inches(config.DOCX_MARGIN_INCHES)
+        section.right_margin = Inches(config.DOCX_MARGIN_INCHES)
 
     return doc
 
@@ -94,7 +92,7 @@ def _add_markdown_to_doc(doc: Document, markdown_text: str) -> None:
 def _set_heading_font(paragraph) -> None:
     """Ensure headings use the standard font."""
     for run in paragraph.runs:
-        run.font.name = DOCX_FONT
+        run.font.name = config.DOCX_FONT
 
 
 def _apply_inline_formatting(paragraph) -> None:
@@ -113,17 +111,17 @@ def _add_formatted_runs(paragraph, text: str) -> None:
         if match.group(2):  # Bold
             run = paragraph.add_run(match.group(2))
             run.bold = True
-            run.font.name = DOCX_FONT
-            run.font.size = Pt(DOCX_FONT_SIZE_PT)
+            run.font.name = config.DOCX_FONT
+            run.font.size = Pt(config.DOCX_FONT_SIZE_PT)
         elif match.group(3):  # Italic
             run = paragraph.add_run(match.group(3))
             run.italic = True
-            run.font.name = DOCX_FONT
-            run.font.size = Pt(DOCX_FONT_SIZE_PT)
+            run.font.name = config.DOCX_FONT
+            run.font.size = Pt(config.DOCX_FONT_SIZE_PT)
         elif match.group(4):  # Plain
             run = paragraph.add_run(match.group(4))
-            run.font.name = DOCX_FONT
-            run.font.size = Pt(DOCX_FONT_SIZE_PT)
+            run.font.name = config.DOCX_FONT
+            run.font.size = Pt(config.DOCX_FONT_SIZE_PT)
 
 
 def _add_references_chapter(doc: Document) -> None:
@@ -152,8 +150,8 @@ def _add_references_chapter(doc: Document) -> None:
         pf.first_line_indent = Inches(-0.5)
 
         run = p.add_run(apa_text)
-        run.font.name = DOCX_FONT
-        run.font.size = Pt(DOCX_FONT_SIZE_PT)
+        run.font.name = config.DOCX_FONT
+        run.font.size = Pt(config.DOCX_FONT_SIZE_PT)
 
 
 def export_section(section_id: str, output_path: Path) -> Path:
@@ -179,16 +177,15 @@ def export_full_paper(output_path: Path) -> Path:
     # Title page
     title_para = doc.add_paragraph()
     title_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    from config import PAPER_TITLE
-    run = title_para.add_run(PAPER_TITLE)
+    run = title_para.add_run(config.PAPER_TITLE)
     run.bold = True
-    run.font.name = DOCX_FONT
+    run.font.name = config.DOCX_FONT
     run.font.size = Pt(16)
     doc.add_page_break()
 
     sections_written = 0
     first_section = True
-    for section_id, title, _ in PAPER_OUTLINE:
+    for section_id, title, _ in _load_outline():
         section = load_section(section_id)
         if not section:
             continue

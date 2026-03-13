@@ -1,12 +1,28 @@
 """Paper outline and section draft management."""
 
 import json
+import re
 from pathlib import Path
-from config import SECTIONS_DIR
+from config import SECTIONS_DIR, _load_settings, save_settings
 
-# ── Paper Outline ─────────────────────────────────────────────────────────
+# Only allow alphanumeric, dots, hyphens, underscores in section IDs
+_SAFE_ID_PATTERN = re.compile(r'^[a-zA-Z0-9._-]+$')
+
+
+def _validate_section_id(section_id: str) -> str:
+    """Validate and sanitize a section ID to prevent path traversal."""
+    section_id = section_id.strip()
+    if not section_id:
+        raise ValueError("Section ID cannot be empty")
+    if not _SAFE_ID_PATTERN.match(section_id):
+        raise ValueError(f"Invalid section ID '{section_id}': only letters, numbers, dots, hyphens, underscores allowed")
+    if '..' in section_id:
+        raise ValueError(f"Invalid section ID '{section_id}': path traversal not allowed")
+    return section_id
+
+# ── Default Paper Outline ────────────────────────────────────────────────
 # Each entry: (section_id, title, suggested_word_count)
-PAPER_OUTLINE: list[tuple[str, str, int]] = [
+_DEFAULT_OUTLINE: list[tuple[str, str, int]] = [
     ("abstract", "Abstract", 300),
     ("ch1", "Chapter 1 — Introduction", 2500),
     ("ch1.1", "1.1 Background and Context", 800),
@@ -50,15 +66,94 @@ PAPER_OUTLINE: list[tuple[str, str, int]] = [
     ("appendices", "Appendices", 0),
 ]
 
+
+def _load_outline() -> list[tuple[str, str, int]]:
+    """Load outline from settings, falling back to default."""
+    settings = _load_settings()
+    saved = settings.get("paper_outline")
+    if saved and isinstance(saved, list):
+        return [(s["id"], s["title"], s["words"]) for s in saved]
+    return list(_DEFAULT_OUTLINE)
+
+
+def save_outline(outline: list[tuple[str, str, int]]) -> None:
+    """Persist the paper outline to settings."""
+    serialized = [{"id": sid, "title": title, "words": words} for sid, title, words in outline]
+    save_settings({"paper_outline": serialized})
+
+
+def add_section(section_id: str, title: str, words: int, after: str | None = None) -> None:
+    """Add a section to the outline. Inserts after *after* if given, else appends."""
+    section_id = _validate_section_id(section_id)
+    if after:
+        after = _validate_section_id(after)
+    outline = _load_outline()
+    # Prevent duplicates
+    if any(sid == section_id for sid, _, _ in outline):
+        raise ValueError(f"Section '{section_id}' already exists")
+    entry = (section_id, title, words)
+    if after:
+        idx = next((i for i, (sid, _, _) in enumerate(outline) if sid == after), None)
+        if idx is not None:
+            outline.insert(idx + 1, entry)
+        else:
+            outline.append(entry)
+    else:
+        outline.append(entry)
+    save_outline(outline)
+    _rebuild_index()
+
+
+def remove_section(section_id: str) -> None:
+    """Remove a section from the outline."""
+    section_id = _validate_section_id(section_id)
+    outline = _load_outline()
+    outline = [(sid, t, w) for sid, t, w in outline if sid != section_id]
+    save_outline(outline)
+    _rebuild_index()
+
+
+def move_section(section_id: str, direction: str) -> None:
+    """Move a section up or down in the outline."""
+    section_id = _validate_section_id(section_id)
+    outline = _load_outline()
+    idx = next((i for i, (sid, _, _) in enumerate(outline) if sid == section_id), None)
+    if idx is None:
+        return
+    if direction == "up" and idx > 0:
+        outline[idx], outline[idx - 1] = outline[idx - 1], outline[idx]
+    elif direction == "down" and idx < len(outline) - 1:
+        outline[idx], outline[idx + 1] = outline[idx + 1], outline[idx]
+    save_outline(outline)
+    _rebuild_index()
+
+
+def reset_outline() -> None:
+    """Reset outline to the built-in default."""
+    save_outline(list(_DEFAULT_OUTLINE))
+    _rebuild_index()
+
+
+# ── Live outline (always read from settings) ─────────────────────────────
+PAPER_OUTLINE: list[tuple[str, str, int]] = _load_outline()
+
 # O(1) lookup dict keyed by section_id → (title, target_words)
 _OUTLINE_INDEX: dict[str, tuple[str, int]] = {
     sid: (title, words) for sid, title, words in PAPER_OUTLINE
 }
 
 
+def _rebuild_index() -> None:
+    """Rebuild PAPER_OUTLINE and _OUTLINE_INDEX from disk after mutations."""
+    global PAPER_OUTLINE, _OUTLINE_INDEX
+    PAPER_OUTLINE = _load_outline()
+    _OUTLINE_INDEX = {sid: (title, words) for sid, title, words in PAPER_OUTLINE}
+
+
 # ── Section Draft Storage ─────────────────────────────────────────────────
 
 def _section_path(section_id: str) -> Path:
+    section_id = _validate_section_id(section_id)
     return SECTIONS_DIR / f"{section_id}.json"
 
 
@@ -70,9 +165,22 @@ def load_section(section_id: str) -> dict | None:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def _undo_path(section_id: str) -> Path:
+    section_id = _validate_section_id(section_id)
+    return SECTIONS_DIR / f"{section_id}.undo.json"
+
+
 def save_section(section_id: str, title: str, text: str, status: str = "draft") -> None:
-    """Save or update a section draft."""
+    """Save or update a section draft. Backs up the previous version for undo."""
     from datetime import datetime, timezone
+
+    # Back up current version before overwriting
+    current_path = _section_path(section_id)
+    if current_path.exists():
+        _undo_path(section_id).write_text(
+            current_path.read_text(encoding="utf-8"), encoding="utf-8"
+        )
+
     data = {
         "id": section_id,
         "title": title,
@@ -80,15 +188,31 @@ def save_section(section_id: str, title: str, text: str, status: str = "draft") 
         "status": status,
         "updated_at": datetime.now(timezone.utc).isoformat(),
     }
-    _section_path(section_id).write_text(
+    current_path.write_text(
         json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8"
     )
+
+
+def undo_section(section_id: str) -> bool:
+    """Restore the previous version of a section. Returns True if successful."""
+    undo = _undo_path(section_id)
+    if not undo.exists():
+        return False
+    current = _section_path(section_id)
+    current.write_text(undo.read_text(encoding="utf-8"), encoding="utf-8")
+    undo.unlink()
+    return True
+
+
+def has_undo(section_id: str) -> bool:
+    """Check if an undo backup exists for a section."""
+    return _undo_path(section_id).exists()
 
 
 def list_sections_status() -> list[dict]:
     """Return outline with draft status for each section."""
     result = []
-    for sid, title, words in PAPER_OUTLINE:
+    for sid, title, words in _load_outline():
         section = load_section(sid)
         status = section["status"] if section else "empty"
         result.append({
