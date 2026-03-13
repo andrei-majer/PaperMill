@@ -28,11 +28,15 @@ docs/
 *.key
 credentials.*
 
-# Chat history (user data)
+# Chat history & settings (user data)
 data/chat_history.json
+data/settings.json
 
 # Project notes
 TODO.md
+
+# Superpowers workspace
+.superpowers/
 
 # OS
 .DS_Store

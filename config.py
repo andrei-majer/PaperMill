@@ -46,6 +46,7 @@ def _reload_settings() -> None:
     global _user_settings, PAPER_TITLE, DOCX_FONT, DOCX_FONT_SIZE_PT
     global DOCX_LINE_SPACING, DOCX_MARGIN_INCHES
     global EMBEDDING_PROVIDER, EMBEDDING_MODEL, EMBEDDING_DIM, EMBEDDING_API_KEY, LAST_EMBEDDING_MODEL
+    global ANTHROPIC_API_KEY, OPENAI_API_KEY, OPENROUTER_API_KEY
     _user_settings = _load_settings()
     PAPER_TITLE = _user_settings.get(
         "paper_title",
@@ -63,6 +64,9 @@ def _reload_settings() -> None:
     EMBEDDING_DIM = _user_settings.get("embedding_dim", 1024)
     EMBEDDING_API_KEY = _user_settings.get("embedding_api_key", "")
     LAST_EMBEDDING_MODEL = _user_settings.get("last_embedding_model", "")
+    ANTHROPIC_API_KEY = _user_settings.get("anthropic_api_key", os.environ.get("ANTHROPIC_API_KEY", ""))
+    OPENAI_API_KEY = _user_settings.get("openai_api_key", os.environ.get("OPENAI_API_KEY", ""))
+    OPENROUTER_API_KEY = _user_settings.get("openrouter_api_key", os.environ.get("OPENROUTER_API_KEY", ""))
 
 
 # ── Paper ─────────────────────────────────────────────────────────────────
@@ -101,7 +105,7 @@ DEFAULT_TOP_K = 8
 LLM_PROVIDER = os.environ.get("LLM_PROVIDER", "ollama")
 
 # ── Claude API ────────────────────────────────────────────────────────────
-ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
+ANTHROPIC_API_KEY = _user_settings.get("anthropic_api_key", os.environ.get("ANTHROPIC_API_KEY", ""))
 CLAUDE_DRAFT_MODEL = "claude-sonnet-4-6"
 CLAUDE_POLISH_MODEL = "claude-opus-4-6"
 
@@ -116,13 +120,13 @@ LMSTUDIO_DRAFT_MODEL = os.environ.get("LMSTUDIO_DRAFT_MODEL", "")
 LMSTUDIO_POLISH_MODEL = os.environ.get("LMSTUDIO_POLISH_MODEL", "")
 
 # ── OpenAI (also works with HuggingFace Inference Endpoints) ─────────────
-OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
+OPENAI_API_KEY = _user_settings.get("openai_api_key", os.environ.get("OPENAI_API_KEY", ""))
 OPENAI_BASE_URL = os.environ.get("OPENAI_BASE_URL", "")  # e.g. https://xyz.endpoints.huggingface.cloud/v1
 OPENAI_DRAFT_MODEL = os.environ.get("OPENAI_DRAFT_MODEL", "gpt-4o")
 OPENAI_POLISH_MODEL = os.environ.get("OPENAI_POLISH_MODEL", "gpt-4o")
 
 # ── OpenRouter ────────────────────────────────────────────────────────────
-OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "")
+OPENROUTER_API_KEY = _user_settings.get("openrouter_api_key", os.environ.get("OPENROUTER_API_KEY", ""))
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 OPENROUTER_DRAFT_MODEL = os.environ.get("OPENROUTER_DRAFT_MODEL", "google/gemini-2.5-flash-preview")
 OPENROUTER_POLISH_MODEL = os.environ.get("OPENROUTER_POLISH_MODEL", "google/gemini-2.5-pro-preview")

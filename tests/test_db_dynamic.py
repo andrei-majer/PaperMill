@@ -7,8 +7,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 def test_make_chunk_record_default_dim():
     from core.db import make_chunk_record
     Record = make_chunk_record(1024)
-    assert hasattr(Record, '__fields__')
-    assert 'vector' in Record.__fields__
+    assert hasattr(Record, 'model_fields')
+    assert 'vector' in Record.model_fields
 
 
 def test_make_chunk_record_different_dim():

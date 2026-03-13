@@ -134,6 +134,40 @@ with st.sidebar:
                 selected_provider, (config.OLLAMA_DRAFT_MODEL, config.OLLAMA_POLISH_MODEL)
             )
 
+        # ── API Key fields for cloud providers ───────────────────────
+        if selected_provider == "claude":
+            _claude_key = st.text_input(
+                "Anthropic API Key",
+                value=config.ANTHROPIC_API_KEY,
+                key="anthropic_api_key",
+                type="password",
+            )
+            if _claude_key != config.ANTHROPIC_API_KEY:
+                save_settings({"anthropic_api_key": _claude_key})
+                config.ANTHROPIC_API_KEY = _claude_key
+
+        elif selected_provider == "openai":
+            _openai_key = st.text_input(
+                "OpenAI API Key",
+                value=config.OPENAI_API_KEY,
+                key="openai_api_key",
+                type="password",
+            )
+            if _openai_key != config.OPENAI_API_KEY:
+                save_settings({"openai_api_key": _openai_key})
+                config.OPENAI_API_KEY = _openai_key
+
+        elif selected_provider == "openrouter":
+            _or_key = st.text_input(
+                "OpenRouter API Key",
+                value=config.OPENROUTER_API_KEY,
+                key="openrouter_api_key",
+                type="password",
+            )
+            if _or_key != config.OPENROUTER_API_KEY:
+                save_settings({"openrouter_api_key": _or_key})
+                config.OPENROUTER_API_KEY = _or_key
+
         # ── Model Selection (Ollama auto-detect) ─────────────────────
         if selected_provider == "ollama":
             @st.cache_data(ttl=30)

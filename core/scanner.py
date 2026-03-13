@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
-import fitz as _fitz_module
+from pypdf import PdfReader as _PdfReader
 from filelock import FileLock
 
 import config
@@ -345,7 +345,7 @@ def scan_structure(pdf_path: Path) -> ScanResult:
     threats = []
 
     try:
-        doc = _fitz_module.open(str(pdf_path))
+        reader = _PdfReader(str(pdf_path))
     except Exception as e:
         threats.append(Threat(
             pattern_name="structure_open_error",
@@ -358,7 +358,7 @@ def scan_structure(pdf_path: Path) -> ScanResult:
         return ScanResult(is_safe=False, threats=threats, source_file=pdf_path.name,
                           scan_type="structural", chunks_scanned=0, llm_escalations=0)
 
-    if doc.is_encrypted:
+    if reader.is_encrypted:
         threats.append(Threat(
             pattern_name="structure_encrypted",
             category="pdf_structure",
@@ -369,26 +369,46 @@ def scan_structure(pdf_path: Path) -> ScanResult:
         ))
 
     try:
-        xref_len = doc.xref_length()
-        for xref in range(1, xref_len):
-            try:
-                obj_str = doc.xref_object(xref)
-                for key in _DANGEROUS_PDF_KEYS:
-                    if key in obj_str:
-                        threats.append(Threat(
-                            pattern_name=f"structure_{key.strip('/').lower()}",
-                            category="pdf_active_content",
-                            matched_text=f"PDF contains {key} at xref {xref}",
-                            location=f"structure:xref:{xref}",
-                            severity="high",
-                            confidence=1.0,
-                        ))
-            except Exception:
-                continue
+        # Walk all objects in the PDF for dangerous keys
+        from pypdf.generic import ArrayObject, DictionaryObject, IndirectObject
+        visited = set()
+
+        def _scan_obj(obj, path="root"):
+            obj_id = id(obj)
+            if obj_id in visited:
+                return
+            visited.add(obj_id)
+            if isinstance(obj, DictionaryObject):
+                for key_obj, val in obj.items():
+                    key_str = str(key_obj)
+                    for dkey in _DANGEROUS_PDF_KEYS:
+                        if key_str == dkey:
+                            threats.append(Threat(
+                                pattern_name=f"structure_{dkey.strip('/').lower()}",
+                                category="pdf_active_content",
+                                matched_text=f"PDF contains {dkey} at {path}",
+                                location=f"structure:{path}",
+                                severity="high",
+                                confidence=1.0,
+                            ))
+                    _scan_obj(val, f"{path}/{key_str}")
+            elif isinstance(obj, ArrayObject):
+                for i, item in enumerate(obj):
+                    _scan_obj(item, f"{path}[{i}]")
+            elif isinstance(obj, IndirectObject):
+                try:
+                    _scan_obj(obj.get_object(), path)
+                except Exception:
+                    pass
+
+        if not reader.is_encrypted:
+            for page in reader.pages:
+                _scan_obj(page.get_object(), "page")
+            if reader.trailer:
+                _scan_obj(reader.trailer, "trailer")
     except Exception:
         pass
 
-    doc.close()
     return ScanResult(
         is_safe=len(threats) == 0,
         threats=threats,
@@ -403,10 +423,14 @@ _METADATA_FIELDS = ["author", "title", "subject", "keywords", "creator", "produc
 
 
 def extract_pdf_metadata(pdf_path: Path) -> dict:
-    doc = _fitz_module.open(str(pdf_path))
-    meta = doc.metadata or {}
-    doc.close()
-    return {k: meta.get(k, "") for k in _METADATA_FIELDS}
+    reader = _PdfReader(str(pdf_path))
+    meta = reader.metadata or {}
+    result = {}
+    for k in _METADATA_FIELDS:
+        # pypdf metadata uses keys like /Author, /Title etc.
+        pypdf_key = f"/{k[0].upper()}{k[1:]}"
+        result[k] = str(meta.get(pypdf_key, "")) if meta.get(pypdf_key) else ""
+    return result
 
 
 def scan_metadata(meta: dict, source: str) -> ScanResult:

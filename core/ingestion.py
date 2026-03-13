@@ -11,7 +11,7 @@ import pdfplumber
 import config
 from config import CHUNK_SIZE_TOKENS, CHUNK_OVERLAP_TOKENS, save_settings
 from core.embedder import embed_passages
-from core.db import get_or_create_table, ChunkRecord
+from core.db import get_or_create_table
 from core.scanner import (
     compute_file_hash,
     load_scan_history,

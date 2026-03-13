@@ -1,21 +1,35 @@
 """Tests for scanner integration in ingestion pipeline."""
 import sys
 from pathlib import Path
+from io import BytesIO
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import pytest
-import fitz
+from pypdf import PdfWriter
+from reportlab.pdfgen import canvas
 
 
 def _make_pdf(path: Path, text: str, metadata: dict | None = None) -> Path:
-    doc = fitz.open()
-    page = doc.new_page()
-    page.insert_text((72, 72), text)
+    """Create a simple PDF with actual text content using reportlab."""
+    buf = BytesIO()
+    c = canvas.Canvas(buf)
+    c.drawString(72, 720, text)
+    c.save()
+    buf.seek(0)
+
+    # If metadata needed, add via pypdf
     if metadata:
-        doc.set_metadata(metadata)
-    doc.save(str(path))
-    doc.close()
+        from pypdf import PdfReader
+        reader = PdfReader(buf)
+        writer = PdfWriter()
+        for page in reader.pages:
+            writer.add_page(page)
+        writer.add_metadata({f"/{k[0].upper()}{k[1:]}": v for k, v in metadata.items()})
+        with open(str(path), "wb") as f:
+            writer.write(f)
+    else:
+        path.write_bytes(buf.getvalue())
     return path
 
 

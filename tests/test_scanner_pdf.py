@@ -5,17 +5,16 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import pytest
-import fitz
+from pypdf import PdfWriter
 
 
 def _make_simple_pdf(path: Path, metadata: dict | None = None) -> Path:
-    doc = fitz.open()
-    page = doc.new_page()
-    page.insert_text((72, 72), "Hello world. This is a test PDF document.")
+    writer = PdfWriter()
+    writer.add_blank_page(width=612, height=792)
     if metadata:
-        doc.set_metadata(metadata)
-    doc.save(str(path))
-    doc.close()
+        writer.add_metadata({f"/{k[0].upper()}{k[1:]}": v for k, v in metadata.items()})
+    with open(str(path), "wb") as f:
+        writer.write(f)
     return path
 
 
@@ -28,12 +27,12 @@ def test_scan_structure_clean_pdf(tmp_path):
 
 def test_scan_structure_detects_encrypted(tmp_path):
     from core.scanner import scan_structure
-    doc = fitz.open()
-    page = doc.new_page()
-    page.insert_text((72, 72), "Secret content")
+    writer = PdfWriter()
+    writer.add_blank_page(width=612, height=792)
+    writer.encrypt("pass", "pass")
     encrypted_path = tmp_path / "encrypted.pdf"
-    doc.save(str(encrypted_path), encryption=fitz.PDF_ENCRYPT_AES_256, user_pw="pass", owner_pw="pass")
-    doc.close()
+    with open(str(encrypted_path), "wb") as f:
+        writer.write(f)
     result = scan_structure(encrypted_path)
     assert not result.is_safe
     assert any("encrypted" in t.matched_text.lower() for t in result.threats)
