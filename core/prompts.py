@@ -113,6 +113,109 @@ The user is asking a question related to the paper. Use the reference chunks bel
 """
 
 
+# ── Tree Index Prompts ────────────────────────────────────────────────────
+
+TREE_TOC_DETECTION_PROMPT = """\
+You are analyzing the first pages of an academic PDF document. Determine whether these pages \
+contain a Table of Contents (TOC).
+
+**Pages:**
+{pages_text}
+
+**Instructions:**
+1. If a TOC is present, extract it as a JSON array of sections. Each section has:
+   - "title": the section/chapter title as written
+   - "start_page": the page number listed in the TOC (integer)
+   - "summary": leave as empty string (will be filled later)
+   - "children": nested subsections in the same format, or empty array
+2. If NO TOC is found, return exactly: {{"has_toc": false}}
+3. If a TOC IS found, return: {{"has_toc": true, "sections": [...]}}
+
+Return ONLY valid JSON, no markdown fences, no explanation.
+"""
+
+TREE_STRUCTURE_GENERATION_PROMPT = """\
+You are analyzing an academic PDF document to build a hierarchical structure index. \
+The document has {total_pages} pages.
+
+**Page summaries:**
+{pages_text}
+
+**Instructions:**
+Build a hierarchical JSON structure representing the document's organization. Each node has:
+- "title": descriptive section title
+- "summary": 1-2 sentence summary of what this section covers
+- "start_page": first page of the section (integer, 1-indexed)
+- "end_page": last page of the section (integer, 1-indexed)
+- "children": array of subsections (same format), or empty array for leaf nodes
+
+Guidelines:
+- Top-level sections should be major divisions (Abstract, Introduction, Literature Review, Methods, etc.)
+- Subdivide sections that span more than 15 pages into meaningful children
+- Page ranges must not overlap between siblings and must cover the full document
+- Every page in the document must belong to exactly one leaf section
+
+Return ONLY valid JSON as a single object with key "sections" containing the array. \
+No markdown fences, no explanation.
+"""
+
+TREE_SECTION_SUBDIVISION_PROMPT = """\
+You are analyzing a large section of an academic document that needs to be subdivided \
+into meaningful subsections.
+
+**Section:** {section_title}
+**Pages {start_page}-{end_page} ({page_count} pages)**
+
+**Page content:**
+{pages_text}
+
+**Instructions:**
+Subdivide this section into 2-6 meaningful subsections. Each subsection has:
+- "title": descriptive subsection title
+- "summary": 1-2 sentence summary
+- "start_page": first page (integer, 1-indexed)
+- "end_page": last page (integer, 1-indexed)
+- "children": empty array
+
+Guidelines:
+- Subsections must cover the full page range [{start_page}-{end_page}] with no gaps or overlaps
+- Split on natural topic boundaries, not arbitrary page counts
+- Each subsection should be a coherent unit
+
+Return ONLY valid JSON as a single object with key "subsections" containing the array. \
+No markdown fences, no explanation.
+"""
+
+TREE_RETRIEVAL_PROMPT = """\
+You are a research assistant helping find relevant sections in academic documents.
+
+**Query:** {query}
+
+**Document structures:**
+{structures}
+
+**Instructions:**
+For each document, identify the sections most relevant to the query. Return a JSON object:
+{{
+  "selections": [
+    {{
+      "document": "filename.pdf",
+      "sections": [
+        {{"title": "section title", "start_page": N, "end_page": M, "relevance": "brief reason"}}
+      ]
+    }}
+  ]
+}}
+
+Guidelines:
+- Select 1-3 most relevant sections per document
+- Prefer specific subsections over broad parent sections
+- Only select sections that are genuinely relevant to the query
+- If no section in a document is relevant, omit that document entirely
+
+Return ONLY valid JSON, no markdown fences, no explanation.
+"""
+
 # ── Prompt name → default value mapping ───────────────────────────────────
 _PROMPT_DEFAULTS: dict[str, str] = {
     "system_prompt": SYSTEM_PROMPT,

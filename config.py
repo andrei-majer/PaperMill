@@ -12,6 +12,7 @@ VERSIONS_DIR = PROJECT_ROOT / "versions"
 SECTIONS_DIR = PROJECT_ROOT / "paper_sections"
 MANIFEST_PATH = VERSIONS_DIR / "manifest.json"
 CHAT_HISTORY_PATH = DATA_DIR / "chat_history.json"
+TREE_INDEX_DIR = DATA_DIR / "tree_indexes"
 
 # ── User Settings (persisted) ─────────────────────────────────────────────
 SETTINGS_PATH = DATA_DIR / "settings.json"
@@ -79,7 +80,7 @@ PAPER_TITLE = _user_settings.get(
 )
 
 # Ensure directories exist
-for d in (PDF_DIR, LANCEDB_DIR, VERSIONS_DIR, SECTIONS_DIR):
+for d in (PDF_DIR, LANCEDB_DIR, VERSIONS_DIR, SECTIONS_DIR, TREE_INDEX_DIR):
     d.mkdir(parents=True, exist_ok=True)
 
 # ── LanceDB ────────────────────────────────────────────────────────────────
@@ -107,12 +108,12 @@ LLM_PROVIDER = os.environ.get("LLM_PROVIDER", "ollama")
 # ── Claude API ────────────────────────────────────────────────────────────
 ANTHROPIC_API_KEY = _user_settings.get("anthropic_api_key", os.environ.get("ANTHROPIC_API_KEY", ""))
 CLAUDE_DRAFT_MODEL = "claude-sonnet-4-6"
-CLAUDE_POLISH_MODEL = "claude-opus-4-6"
+CLAUDE_POLISH_MODEL = "claude-opus-4-7"
 
 # ── Ollama ────────────────────────────────────────────────────────────────
 OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://localhost:11434")
 OLLAMA_DRAFT_MODEL = os.environ.get("OLLAMA_DRAFT_MODEL", "llama3.1:latest")
-OLLAMA_POLISH_MODEL = os.environ.get("OLLAMA_POLISH_MODEL", "gemma3:12b")
+OLLAMA_POLISH_MODEL = os.environ.get("OLLAMA_POLISH_MODEL", "gemma4:e4b")
 
 # ── LM Studio ─────────────────────────────────────────────────────────────
 LMSTUDIO_URL = os.environ.get("LMSTUDIO_URL", "http://localhost:1234/v1")
@@ -122,8 +123,8 @@ LMSTUDIO_POLISH_MODEL = os.environ.get("LMSTUDIO_POLISH_MODEL", "")
 # ── OpenAI (also works with HuggingFace Inference Endpoints) ─────────────
 OPENAI_API_KEY = _user_settings.get("openai_api_key", os.environ.get("OPENAI_API_KEY", ""))
 OPENAI_BASE_URL = os.environ.get("OPENAI_BASE_URL", "")  # e.g. https://xyz.endpoints.huggingface.cloud/v1
-OPENAI_DRAFT_MODEL = os.environ.get("OPENAI_DRAFT_MODEL", "gpt-4o")
-OPENAI_POLISH_MODEL = os.environ.get("OPENAI_POLISH_MODEL", "gpt-4o")
+OPENAI_DRAFT_MODEL = os.environ.get("OPENAI_DRAFT_MODEL", "gpt-5.4-mini")
+OPENAI_POLISH_MODEL = os.environ.get("OPENAI_POLISH_MODEL", "gpt-5.5")
 
 # ── OpenRouter ────────────────────────────────────────────────────────────
 OPENROUTER_API_KEY = _user_settings.get("openrouter_api_key", os.environ.get("OPENROUTER_API_KEY", ""))

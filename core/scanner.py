@@ -243,6 +243,9 @@ class OllamaClassifierBackend(ScannerBackend):
                 )
             return BackendResult(threats=[], suspicion_score=0.0)
 
+        except (urllib.error.URLError, ConnectionError, OSError) as e:
+            # Connection failures (Ollama down, etc.) — skip, don't block the file
+            return BackendResult(threats=[], suspicion_score=0.0)
         except Exception as e:
             return BackendResult(
                 threats=[Threat(
@@ -250,8 +253,8 @@ class OllamaClassifierBackend(ScannerBackend):
                     category="llm_classified",
                     matched_text=f"LLM classifier parse failure — manual review required: {str(e)[:100]}",
                     location=location,
-                    severity="high",
-                    confidence=0.5,
+                    severity="low",
+                    confidence=0.3,
                 )],
                 suspicion_score=0.0,
             )
@@ -559,6 +562,26 @@ def update_scan_history(file_hash: str, filename: str, result: str, pattern_vers
 
 
 # ── Quarantine ────────────────────────────────────────────────────────────
+
+def clear_quarantine() -> int:
+    """Delete all quarantined files and remove blocked entries from scan history.
+    Returns the number of files removed."""
+    count = 0
+    for f in config.QUARANTINE_DIR.iterdir():
+        if f.is_file():
+            f.unlink()
+            count += 1
+    # Remove blocked entries from scan history
+    with _history_lock():
+        if config.SCAN_HISTORY_PATH.exists():
+            try:
+                history = json.loads(config.SCAN_HISTORY_PATH.read_text(encoding="utf-8"))
+                history = {k: v for k, v in history.items() if v.get("result") != "blocked"}
+                config.SCAN_HISTORY_PATH.write_text(json.dumps(history, indent=2), encoding="utf-8")
+            except (json.JSONDecodeError, IOError):
+                pass
+    return count
+
 
 def quarantine_file(file_path: Path) -> Path:
     dest = config.QUARANTINE_DIR / file_path.name

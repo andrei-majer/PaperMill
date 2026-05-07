@@ -13,7 +13,7 @@ import config
 from config import PDF_DIR, DATA_DIR, VERSIONS_DIR, REPORTS_DIR, CHAT_HISTORY_PATH, save_settings
 from core.scanner import (
     load_rules, ContentBlockedError, load_scan_history,
-    add_to_allowlist, remove_from_allowlist, quarantine_release, compute_file_hash,
+    add_to_allowlist, remove_from_allowlist, quarantine_release, clear_quarantine, compute_file_hash,
 )
 from core.ingestion import ingest_pdf
 from core.image_ingestion import ingest_image, ingest_images_dir, IMAGE_EXTENSIONS
@@ -27,8 +27,13 @@ from core.paper_structure import (
     undo_section, has_undo,
 )
 from core.db import list_sources, delete_source
+from core.tree_index import (
+    has_tree_index, build_tree_index, delete_tree_index,
+    estimate_llm_calls, list_tree_indexed_sources,
+)
+from core.tree_retrieval import tree_search
 from core.docexport import export_full_paper, export_section
-from core.versioning import save_version, list_versions
+from core.versioning import save_version, list_versions, delete_version
 from core.bibliography import add_reference, remove_reference, list_references, format_apa
 
 
@@ -89,6 +94,9 @@ if "messages" not in st.session_state:
 elif "chat_history" not in st.session_state:
     st.session_state.chat_history = []
 
+if "retrieval_mode" not in st.session_state:
+    st.session_state.retrieval_mode = "vector"
+
 # ── Sidebar ────────────────────────────────────────────────────────────────
 with st.sidebar:
     st.markdown("""<style>
@@ -99,7 +107,7 @@ with st.sidebar:
         section[data-testid="stSidebar"] > div:first-child {padding-top: 0;}
         section[data-testid="stSidebar"] [data-testid="stSidebarContent"] {padding-top: 0;}
     </style>""", unsafe_allow_html=True)
-    st.markdown('<p style="font-size:24px; font-weight:bold; margin-bottom:0;">PaperMill</p>', unsafe_allow_html=True)
+    st.markdown('<p style="font-size:32px; font-weight:bold; margin-bottom:0;">PaperMill</p>', unsafe_allow_html=True)
     st.caption("AI-Powered Academic Writing Assistant")
 
     # ━━ Settings ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -353,7 +361,21 @@ with st.sidebar:
             st.session_state["show_prompt_editor"] = True
             st.rerun()
 
-    # ━━ Paper Sections Manager ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    # ━━ Write ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    st.subheader("Write")
+
+    # ── Paper Title ───────────────────────────────────────────────────
+    _title_col1, _title_col2 = st.columns([5, 1])
+    new_title = _title_col1.text_input("Paper Title", value=config.PAPER_TITLE, key="cfg_title", label_visibility="collapsed")
+    _title_col2.markdown("<div style='margin-top: 1px;'></div>", unsafe_allow_html=True)
+    if _title_col2.button("Save", key="save_title_btn", use_container_width=True):
+        if new_title != config.PAPER_TITLE:
+            save_settings({"paper_title": new_title})
+            config.PAPER_TITLE = new_title
+            st.success("Title saved!")
+            st.rerun()
+
+    # ── Paper Sections ────────────────────────────────────────────────
     with st.expander("Paper Sections", expanded=False):
         outline = _load_outline()
 
@@ -395,9 +417,6 @@ with st.sidebar:
             reset_outline()
             st.success("Outline reset to default.")
             st.rerun()
-
-    # ━━ Write ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    st.subheader("Write")
     statuses = list_sections_status()
     status_icons = {"empty": "\u2b1c", "draft": "\U0001f4dd", "review": "\U0001f50d", "final": "\u2705"}
 
@@ -434,7 +453,10 @@ with st.sidebar:
                 if cc1.button("Confirm Draft", key="confirm_draft_btn", type="primary"):
                     st.session_state.pop("confirm_draft", None)
                     with st.spinner(f"Drafting {selected['title']}..."):
-                        chunks = search(selected["title"], top_k=12)
+                        if st.session_state.retrieval_mode == "tree":
+                            chunks = tree_search(selected["title"])
+                        else:
+                            chunks = search(selected["title"], top_k=12)
                         text, stats = draft_section(selected["id"], chunks)
                     st.session_state["gen_stats"] = f"Draft saved! | {stats.provider}:{stats.model} | {stats.tokens_per_sec} tok/s | {stats.completion_tokens} tokens | {stats.elapsed_sec}s | ctx: {stats.prompt_tokens} tok"
                     st.session_state["gen_stats_section"] = selected["id"]
@@ -445,7 +467,10 @@ with st.sidebar:
         else:
             if col1.button("Draft", key="draft_btn", use_container_width=True):
                 with st.spinner(f"Drafting {selected['title']}..."):
-                    chunks = search(selected["title"], top_k=12)
+                    if st.session_state.retrieval_mode == "tree":
+                        chunks = tree_search(selected["title"])
+                    else:
+                        chunks = search(selected["title"], top_k=12)
                     text, stats = draft_section(selected["id"], chunks)
                 st.session_state["gen_stats"] = f"Draft saved! | {stats.provider}:{stats.model} | {stats.tokens_per_sec} tok/s | {stats.completion_tokens} tokens | {stats.elapsed_sec}s | ctx: {stats.prompt_tokens} tok"
                 st.session_state["gen_stats_section"] = selected["id"]
@@ -464,7 +489,10 @@ with st.sidebar:
             if cc1.button("Confirm Rewrite", key="confirm_rewrite_btn", type="primary"):
                 st.session_state.pop("confirm_rewrite", None)
                 with st.spinner(f"Rewriting with {config.POLISH_MODEL}..."):
-                    chunks = search(selected["title"], top_k=8)
+                    if st.session_state.retrieval_mode == "tree":
+                        chunks = tree_search(selected["title"])
+                    else:
+                        chunks = search(selected["title"], top_k=8)
                     text, stats = rewrite_section(selected["id"], chunks=chunks)
                 st.session_state["gen_stats"] = f"Rewrite saved! | {stats.provider}:{stats.model} | {stats.tokens_per_sec} tok/s | {stats.completion_tokens} tokens | {stats.elapsed_sec}s | ctx: {stats.prompt_tokens} tok"
                 st.session_state["gen_stats_section"] = selected["id"]
@@ -485,7 +513,6 @@ with st.sidebar:
 
     # ━━ Paper & Export ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     with st.expander("Paper & Export", expanded=False):
-        new_title = st.text_input("Paper Title", value=config.PAPER_TITLE, key="cfg_title")
         _font_options = [
             "Times New Roman", "Arial", "Calibri", "Cambria",
             "Garamond", "Georgia", "Palatino Linotype", "Book Antiqua",
@@ -499,14 +526,12 @@ with st.sidebar:
 
         if st.button("Save Settings", key="save_settings_btn", use_container_width=True):
             updates = {
-                "paper_title": new_title,
                 "docx_font": new_font,
                 "docx_font_size": int(new_font_size),
                 "docx_line_spacing": float(new_line_spacing),
                 "docx_margin_inches": float(new_margin),
             }
             save_settings(updates)
-            config.PAPER_TITLE = new_title
             config.DOCX_FONT = new_font
             config.DOCX_FONT_SIZE_PT = int(new_font_size)
             config.DOCX_LINE_SPACING = float(new_line_spacing)
@@ -542,14 +567,36 @@ with st.sidebar:
             for v in reversed(versions[-5:]):
                 vpath = VERSIONS_DIR / v["filename"]
                 if vpath.exists():
+                    dl_col, del_col = st.columns([8, 1])
                     with open(vpath, "rb") as f:
-                        st.download_button(
+                        dl_col.download_button(
                             f"v{v['version']}: {v['label']} ({v['timestamp'][:10]})",
                             f.read(),
                             file_name=v["filename"],
                             mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
                             key=f"dl_v{v['version']}",
+                            use_container_width=True,
                         )
+                    if del_col.button("\u2715", key=f"del_v{v['version']}"):
+                        st.session_state["confirm_del_version"] = v["version"]
+                        st.rerun()
+
+        if "confirm_del_version" in st.session_state:
+            _del_vnum = st.session_state["confirm_del_version"]
+
+            @st.dialog(f"Delete version v{_del_vnum}?")
+            def _confirm_del_version():
+                st.warning("This will permanently delete this version.")
+                c1, c2 = st.columns(2)
+                if c1.button("Delete", key="confirm_del_v_btn", type="primary", use_container_width=True):
+                    delete_version(_del_vnum)
+                    st.session_state.pop("confirm_del_version", None)
+                    st.rerun()
+                if c2.button("Cancel", key="cancel_del_v_btn", use_container_width=True):
+                    st.session_state.pop("confirm_del_version", None)
+                    st.rerun()
+
+            _confirm_del_version()
 
 
     # ━━ Bibliography ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -578,43 +625,82 @@ with st.sidebar:
     # ━━ Add Sources ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     st.subheader("Add Sources")
 
-    uploaded_file = st.file_uploader("Upload a PDF", type=["pdf"], key="pdf_uploader")
-    if uploaded_file is not None:
-        _safe_pdf_name = _sanitize_filename(uploaded_file.name)
-        save_path = PDF_DIR / _safe_pdf_name
-        uploaded_bytes = uploaded_file.getvalue()
-        _is_duplicate = False
+    _MAX_PDF_MB = 20
+    uploaded_files = st.file_uploader(f"Upload PDFs (max {_MAX_PDF_MB} MB each)", type=["pdf"], key="pdf_uploader", accept_multiple_files=True)
+    if uploaded_files:
+        # Save all uploaded files to disk
+        _saved_paths = []
+        for uploaded_file in uploaded_files:
+            if len(uploaded_file.getbuffer()) > _MAX_PDF_MB * 1024 * 1024:
+                st.error(f"**{uploaded_file.name}** exceeds {_MAX_PDF_MB} MB limit. Skipped.")
+                continue
+            _safe_pdf_name = _sanitize_filename(uploaded_file.name)
+            save_path = PDF_DIR / _safe_pdf_name
+            uploaded_bytes = uploaded_file.getvalue()
 
-        # Check for duplicate by filename + size
-        if save_path.exists():
-            if save_path.stat().st_size == len(uploaded_bytes):
-                st.info(f"**{_safe_pdf_name}** already exists (same size). Skipped saving.")
-                _is_duplicate = True
+            if save_path.exists():
+                if save_path.stat().st_size == len(uploaded_bytes):
+                    st.info(f"**{_safe_pdf_name}** already exists (same size). Skipped saving.")
+                else:
+                    st.warning(f"**{_safe_pdf_name}** exists but differs in size. Overwriting.")
+                    save_path.write_bytes(uploaded_bytes)
+                    _saved_paths.append(save_path)
             else:
-                st.warning(f"**{_safe_pdf_name}** exists but differs in size ({save_path.stat().st_size} vs {len(uploaded_bytes)} bytes). Overwriting.")
+                _size_match = [p for p in PDF_DIR.glob("*.pdf") if p.stat().st_size == len(uploaded_bytes) and p.name != _safe_pdf_name]
+                if _size_match:
+                    st.warning(f"A file with the same size already exists: **{_size_match[0].name}**. May be a duplicate.")
                 save_path.write_bytes(uploaded_bytes)
-        else:
-            # Check if same content exists under a different filename
-            _size_match = [p for p in PDF_DIR.glob("*.pdf") if p.stat().st_size == len(uploaded_bytes) and p.name != _safe_pdf_name]
-            if _size_match:
-                st.warning(f"A file with the same size already exists: **{_size_match[0].name}**. This may be a duplicate.")
-            save_path.write_bytes(uploaded_bytes)
+                _saved_paths.append(save_path)
 
-        # Also check if already ingested in the vector DB
-        if _safe_pdf_name in list_sources():
-            st.info(f"**{_safe_pdf_name}** is already ingested in the vector DB.")
+            if _safe_pdf_name in list_sources():
+                st.info(f"**{_safe_pdf_name}** is already ingested in the vector DB.")
 
-        if st.button("Ingest uploaded PDF", key="ingest_btn"):
-            with st.spinner(f"Scanning & ingesting {_safe_pdf_name}..."):
+        _label = f"Scan & ingest {len(uploaded_files)} PDF{'s' if len(uploaded_files) > 1 else ''}"
+        if st.button(_label, key="ingest_btn"):
+            _total_chunks = 0
+            _blocked = 0
+            progress = st.progress(0, text="Scanning...")
+            for i, uploaded_file in enumerate(uploaded_files):
+                _safe_pdf_name = _sanitize_filename(uploaded_file.name)
+                save_path = PDF_DIR / _safe_pdf_name
+                progress.progress((i) / len(uploaded_files), text=f"Scanning {_safe_pdf_name}...")
                 try:
                     count = ingest_pdf(save_path)
                     if count > 0:
-                        st.success(f"Ingested {count} chunks from {_safe_pdf_name}")
-                    else:
-                        st.info("Already ingested.")
+                        _total_chunks += count
                 except ContentBlockedError as e:
-                    st.error(f"BLOCKED: {e}")
+                    _blocked += 1
+                    st.error(f"BLOCKED: **{_safe_pdf_name}** — {e}")
                     st.warning(f"Report: {e.report_path}")
+            progress.progress(1.0, text="Done")
+            if _total_chunks > 0:
+                st.success(f"Ingested {_total_chunks} chunks from {len(uploaded_files) - _blocked} file{'s' if len(uploaded_files) - _blocked > 1 else ''}.")
+            if _blocked == 0 and _total_chunks == 0:
+                st.info("All files already ingested.")
+
+    if st.button("Ingest all documents", key="ingest_all_docs_btn"):
+        _all_pdfs = sorted(PDF_DIR.glob("*.pdf"))
+        if not _all_pdfs:
+            st.info("No PDFs found in data/pdfs/.")
+        else:
+            _total = 0
+            _blocked_count = 0
+            _progress = st.progress(0, text="Scanning...")
+            for i, pdf_path in enumerate(_all_pdfs):
+                _progress.progress(i / len(_all_pdfs), text=f"Scanning {pdf_path.name}...")
+                try:
+                    count = ingest_pdf(pdf_path)
+                    if count > 0:
+                        _total += count
+                except ContentBlockedError as e:
+                    _blocked_count += 1
+                    st.error(f"BLOCKED: **{pdf_path.name}** — {e}")
+            _progress.progress(1.0, text="Done")
+            _ingested_count = len(_all_pdfs) - _blocked_count
+            if _total > 0:
+                st.success(f"Ingested {_total} chunks from {_ingested_count} file{'s' if _ingested_count > 1 else ''}.")
+            elif _blocked_count == 0:
+                st.info("All documents already ingested.")
 
     IMAGES_DIR = DATA_DIR / "images"
     IMAGES_DIR.mkdir(parents=True, exist_ok=True)
@@ -661,13 +747,48 @@ with st.sidebar:
 
     # ━━ Ingested Sources ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     sources = list_sources()
+    _tree_indexed = set(list_tree_indexed_sources())
     st.subheader(f"Ingested Sources ({len(sources)})")
     if sources:
         for src in sources:
-            col1, col2 = st.columns([3, 1])
-            col1.markdown(f"- {src}")
-            if col2.button("X", key=f"del_{src}", help=f"Delete {src}"):
+            _has_tree = src in _tree_indexed
+            col1, col2, col3 = st.columns([3, 1, 1])
+            _tree_icon = "\U0001f333" if _has_tree else ""
+            col1.markdown(f"- {_tree_icon} {src}")
+            if _has_tree:
+                if col2.button("\U0001f333 Del", key=f"tree_del_{src}", help="Delete tree index"):
+                    delete_tree_index(src)
+                    st.rerun()
+            else:
+                if col2.button("\U0001f333 Build", key=f"tree_build_{src}", help="Build tree index"):
+                    st.session_state["confirm_tree_build"] = src
+            if col3.button("X", key=f"del_{src}", help=f"Delete {src}"):
                 st.session_state["confirm_delete_source"] = src
+
+        # Tree build confirmation
+        if "confirm_tree_build" in st.session_state:
+            _build_src = st.session_state["confirm_tree_build"]
+            _pdf_path = config.PDF_DIR / _build_src
+            _est_calls = estimate_llm_calls(_pdf_path) if _pdf_path.exists() else 3
+            _provider_warn = config.LLM_PROVIDER == "ollama"
+            if _provider_warn:
+                st.warning("Tree indexing works best with strong models (Claude, GPT-4o). Local model results may be unreliable.")
+            st.info(f"Build tree index for **{_build_src}**? Estimated ~{_est_calls} LLM calls.")
+            _tc1, _tc2 = st.columns(2)
+            if _tc1.button("Build", key="confirm_tree_build_btn", type="primary"):
+                st.session_state.pop("confirm_tree_build", None)
+                _tree_progress = st.empty()
+                try:
+                    build_tree_index(_pdf_path, progress_callback=lambda s: _tree_progress.caption(s))
+                    _tree_progress.empty()
+                    st.success(f"Tree index built for {_build_src}")
+                    st.rerun()
+                except Exception as e:
+                    _tree_progress.empty()
+                    st.error(f"Tree index failed: {e}")
+            if _tc2.button("Cancel", key="cancel_tree_build_btn"):
+                st.session_state.pop("confirm_tree_build", None)
+                st.rerun()
 
         if "confirm_delete_source" in st.session_state:
             _del_src = st.session_state["confirm_delete_source"]
@@ -675,6 +796,9 @@ with st.sidebar:
             cc1, cc2 = st.columns(2)
             if cc1.button("Confirm Delete", key="confirm_del_src_btn", type="primary"):
                 delete_source(_del_src)
+                # Also clean up tree index if it exists
+                if _del_src in _tree_indexed:
+                    delete_tree_index(_del_src)
                 st.session_state.pop("confirm_delete_source", None)
                 st.success(f"Deleted {_del_src}")
                 st.rerun()
@@ -702,8 +826,30 @@ with st.sidebar:
                 if col2.button("View", key=f"view_{rf.name}"):
                     st.session_state["view_report"] = str(rf)
                     st.rerun()
+            if st.button("Clear Reports", key="clear_reports_btn"):
+                st.session_state["confirm_clear_reports"] = True
+                st.rerun()
         else:
             st.caption("No reports yet.")
+
+    if "confirm_clear_reports" in st.session_state:
+        @st.dialog("Clear all scan reports?")
+        def _confirm_clear_reports():
+            st.warning("This will permanently delete all scan report files.")
+            c1, c2 = st.columns(2)
+            if c1.button("Clear All", key="confirm_clear_rpt_btn", type="primary", use_container_width=True):
+                _count = 0
+                for _rf in REPORTS_DIR.glob("*.md"):
+                    _rf.unlink()
+                    _count += 1
+                st.session_state.pop("confirm_clear_reports", None)
+                st.toast(f"Deleted {_count} report{'s' if _count != 1 else ''}.")
+                st.rerun()
+            if c2.button("Cancel", key="cancel_clear_rpt_btn", use_container_width=True):
+                st.session_state.pop("confirm_clear_reports", None)
+                st.rerun()
+
+        _confirm_clear_reports()
 
     # Show report in a dialog popup
     if "view_report" in st.session_state:
@@ -735,10 +881,29 @@ with st.sidebar:
                         st.rerun()
                 else:
                     col2.caption("No report")
+            if st.button("Clear Quarantine", key="clear_quarantine_btn"):
+                st.session_state["confirm_clear_quarantine"] = True
+                st.rerun()
         else:
             st.caption("No quarantined files.")
 
-    st.caption("**PaperMill** v1.3 | [GitHub](https://github.com/cr231521/PaperMill) | CC BY-NC 4.0")
+    if "confirm_clear_quarantine" in st.session_state:
+        @st.dialog("Clear quarantine?")
+        def _confirm_clear_quarantine():
+            st.warning(f"This will permanently delete all quarantined files.")
+            c1, c2 = st.columns(2)
+            if c1.button("Clear All", key="confirm_clear_q_btn", type="primary", use_container_width=True):
+                removed = clear_quarantine()
+                st.session_state.pop("confirm_clear_quarantine", None)
+                st.toast(f"Removed {removed} quarantined file{'s' if removed != 1 else ''}.")
+                st.rerun()
+            if c2.button("Cancel", key="cancel_clear_q_btn", use_container_width=True):
+                st.session_state.pop("confirm_clear_quarantine", None)
+                st.rerun()
+
+        _confirm_clear_quarantine()
+
+    st.caption("**PaperMill** v1.0 | [GitHub](https://github.com/cr231521/PaperMill) | CC BY-NC 4.0")
 
 
 # ── Main Area ─────────────────────────────────────────────────────────────
@@ -849,10 +1014,22 @@ with tab_section:
             st.info(f"Section '{selected['id']}' has not been drafted yet.")
 
 with tab_chat:
-    _ch_col1, _ch_col2 = st.columns([6, 1])
+    _ch_col1, _ch_col2, _ch_col3 = st.columns([5, 2, 1])
     _ch_col1.markdown("### Research Chat")
     _ch_col1.caption("Ask questions about your reference materials.")
-    if _ch_col2.button("Clear", key="clear_history_btn"):
+    _tree_sources = list_tree_indexed_sources()
+    _mode_options = ["Vector Search", "Tree Search"]
+    _mode_idx = 1 if st.session_state.retrieval_mode == "tree" else 0
+    _sel_mode = _ch_col2.selectbox(
+        "Retrieval",
+        _mode_options,
+        index=_mode_idx,
+        key="retrieval_mode_select",
+        disabled=len(_tree_sources) == 0,
+        help="Tree Search requires tree-indexed documents" if not _tree_sources else None,
+    )
+    st.session_state.retrieval_mode = "tree" if _sel_mode == "Tree Search" else "vector"
+    if _ch_col3.button("Clear", key="clear_history_btn"):
         st.session_state.messages = []
         st.session_state.chat_history = []
         _save_chat_history([])
@@ -875,7 +1052,10 @@ with tab_chat:
         # Generate response
         with st.chat_message("assistant"):
             with st.spinner("Searching references and generating response..."):
-                chunks = search(prompt, top_k=8)
+                if st.session_state.retrieval_mode == "tree":
+                    chunks = tree_search(prompt)
+                else:
+                    chunks = search(prompt, top_k=8)
                 response_text, stats, input_warnings = chat(prompt, chunks, st.session_state.chat_history)
 
             if input_warnings:

@@ -28,14 +28,19 @@ docs/
 *.key
 credentials.*
 
-# Chat history & settings (user data)
+# Chat history & settings (user data — may contain API keys)
 data/chat_history.json
 data/settings.json
+data/tree_indexes/
 
 # Project notes
 TODO.md
 
-# Superpowers workspace
+# DevRAG (local development tool, not for distribution)
+devrag_mcp.py
+
+# IDE / tool workspaces
+.claude/
 .superpowers/
 
 # OS

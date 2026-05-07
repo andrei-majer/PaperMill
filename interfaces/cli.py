@@ -24,6 +24,11 @@ from core.paper_structure import (
     get_section_title,
 )
 from core.db import list_sources, delete_source
+from core.tree_index import (
+    has_tree_index, build_tree_index, delete_tree_index,
+    estimate_llm_calls, list_tree_indexed_sources,
+)
+from core.tree_retrieval import tree_search
 from core.docexport import export_full_paper, export_section
 from core.versioning import save_version, list_versions, compare_versions
 from core.bibliography import add_reference, remove_reference, list_references, format_apa
@@ -79,11 +84,15 @@ Commands:
   /allowlist-add <path>  Add file to scanner allowlist
   /allowlist-remove <hash> Remove hash from allowlist
   /quarantine-release [hash] Release quarantined file (no args = list)
+  /tree-build <name>     Build tree index for a source (on-demand)
+  /tree-delete <name>    Delete tree index for a source
+  /tree-sources          List sources with tree indexes
+  /mode [vector|tree]    Show or set retrieval mode
   /clear-history         Clear chat history (file + in-memory)
   /help                  Show this help
   /quit                  Exit
 
-Free text → RAG-powered chat with citations.
+Free text → RAG-powered chat (uses current retrieval mode).
 """
     print(help_text)
 
@@ -142,9 +151,11 @@ def cmd_sources():
     if not sources:
         print("No sources ingested yet.")
         return
+    _tree_indexed = set(list_tree_indexed_sources())
     print("Ingested sources:")
     for s in sources:
-        print(f"  - {s}")
+        tree_tag = " [tree]" if s in _tree_indexed else ""
+        print(f"  - {s}{tree_tag}")
 
 
 def cmd_delete_source(args: str):
@@ -182,8 +193,8 @@ def cmd_draft(args: str):
         return
     title = get_section_title(section_id)
     print(f"Drafting: {title}")
-    print("Searching for relevant references...")
-    chunks = search(title, top_k=12)
+    print(f"Searching for relevant references ({_retrieval_mode} mode)...")
+    chunks = _search_with_mode(title, top_k=12)
     print(f"  Found {len(chunks)} relevant chunks.")
     print("Generating draft (this may take a moment)...")
     text, stats = draft_section(section_id, chunks)
@@ -206,7 +217,7 @@ def cmd_rewrite(args: str):
         return
     import config as _cfg
     print(f"Rewriting: {section['title']} (using {_cfg.LLM_PROVIDER}:{_get_model('polish')} for polish)...")
-    chunks = search(section["title"], top_k=8)
+    chunks = _search_with_mode(section["title"], top_k=8)
     text, stats = rewrite_section(section_id, chunks=chunks)
     print(f"\n{'='*60}")
     print(text[:500] + "..." if len(text) > 500 else text)
@@ -377,10 +388,91 @@ def cmd_quarantine_release_cmd(args: str):
         print(f"Error: {e}")
 
 
+# ── Retrieval mode state ──────────────────────────────────────────────────
+
+_retrieval_mode = "vector"
+
+
+def _search_with_mode(query: str, top_k: int = 8) -> list[dict]:
+    """Search using the current retrieval mode."""
+    if _retrieval_mode == "tree":
+        return tree_search(query)
+    return search(query, top_k=top_k)
+
+
+def cmd_tree_build(args: str):
+    """Build a tree index for a source."""
+    name = args.strip()
+    if not name:
+        print("Usage: /tree-build <source_filename>")
+        return
+    pdf_path = PDF_DIR / name
+    if not pdf_path.exists():
+        print(f"PDF not found: {name}")
+        return
+    if has_tree_index(name):
+        print(f"Tree index already exists for {name}. Delete it first with /tree-delete {name}")
+        return
+    est = estimate_llm_calls(pdf_path)
+    import config as _cfg
+    if _cfg.LLM_PROVIDER == "ollama":
+        print("  Warning: Tree indexing works best with strong models (Claude, GPT-4o). Local model results may be unreliable.")
+    print(f"Building tree index for {name} (~{est} LLM calls)...")
+    try:
+        tree = build_tree_index(pdf_path, progress_callback=lambda s: print(f"  {s}"))
+        print(f"Done! {len(tree['sections'])} top-level sections:")
+        for s in tree["sections"]:
+            children = len(s.get("children", []))
+            print(f"  - {s['title']} (pp. {s['start_page']}-{s['end_page']}) [{children} sub]")
+    except Exception as e:
+        print(f"Error: {e}")
+
+
+def cmd_tree_delete(args: str):
+    """Delete a tree index for a source."""
+    name = args.strip()
+    if not name:
+        print("Usage: /tree-delete <source_filename>")
+        return
+    if not has_tree_index(name):
+        print(f"No tree index found for {name}.")
+        return
+    delete_tree_index(name)
+    print(f"Deleted tree index for {name}.")
+
+
+def cmd_tree_sources():
+    """List sources with tree indexes."""
+    indexed = list_tree_indexed_sources()
+    if not indexed:
+        print("No sources have tree indexes. Build one with /tree-build <name>")
+        return
+    print(f"Tree-indexed sources ({len(indexed)}):")
+    for s in indexed:
+        print(f"  - {s}")
+
+
+def cmd_mode(args: str):
+    """Show or set retrieval mode."""
+    global _retrieval_mode
+    mode = args.strip().lower()
+    if not mode:
+        print(f"Current retrieval mode: {_retrieval_mode}")
+        return
+    if mode not in ("vector", "tree"):
+        print("Usage: /mode [vector|tree]")
+        return
+    if mode == "tree" and not list_tree_indexed_sources():
+        print("No tree-indexed sources. Build one first with /tree-build <name>")
+        return
+    _retrieval_mode = mode
+    print(f"Retrieval mode set to: {_retrieval_mode}")
+
+
 def handle_chat(message: str, history: list[dict]):
     """Handle free-text chat with RAG."""
-    print("Searching references...")
-    chunks = search(message, top_k=8)
+    print(f"Searching references ({_retrieval_mode} mode)...")
+    chunks = _search_with_mode(message, top_k=8)
     print(f"  Found {len(chunks)} relevant chunks.")
     print("Generating response...\n")
     response, stats, input_warnings = chat(message, chunks, history)
@@ -467,6 +559,14 @@ def run():
                 cmd_allowlist_remove(args)
             elif cmd == "/quarantine-release":
                 cmd_quarantine_release_cmd(args)
+            elif cmd == "/tree-build":
+                cmd_tree_build(args)
+            elif cmd == "/tree-delete":
+                cmd_tree_delete(args)
+            elif cmd == "/tree-sources":
+                cmd_tree_sources()
+            elif cmd == "/mode":
+                cmd_mode(args)
             elif cmd == "/clear-history":
                 history = []
                 _save_chat_history(history)

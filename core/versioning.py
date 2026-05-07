@@ -59,6 +59,21 @@ def save_version(label: str = "") -> dict:
     return entry
 
 
+def delete_version(version_num: int) -> None:
+    """Delete a version by number: remove the .docx file and manifest entry."""
+    manifest = _load_manifest()
+    entry = next((e for e in manifest if e["version"] == version_num), None)
+    if entry is None:
+        raise ValueError(f"Version {version_num} not found in manifest.")
+    # Delete the file
+    fpath = VERSIONS_DIR / entry["filename"]
+    if fpath.exists():
+        fpath.unlink()
+    # Remove from manifest
+    manifest = [e for e in manifest if e["version"] != version_num]
+    _save_manifest(manifest)
+
+
 def list_versions() -> list[dict]:
     """Return all version entries from the manifest."""
     return _load_manifest()

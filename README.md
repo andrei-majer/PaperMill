@@ -1,79 +1,162 @@
-# PaperMill
-AI-powered academic writing assistant with a local-first RAG pipeline and built-in content safety scanning against prompt injection and data exfiltration.
+<div align="center">
 
-## Features
+# 📝 PaperMill
 
-- **PDF & Image Ingestion** — Parse PDFs with heading-aware chunking (PyMuPDF), describe images via Florence-2 (caption + OCR), embed everything with Jina Embeddings v3. DOIs are auto-extracted from PDF metadata and first-page text.
-- **Vector Search** — LanceDB-backed semantic search across all ingested documents
-- **RAG Chat** — Ask questions about your references with source citations and persistent chat history
-- **Section Drafting & Rewriting** — Draft sections from scratch using RAG context, rewrite them with a polish model, with overwrite confirmation and one-step undo
-- **Inline Section Editor** — Toggle Write mode in the Section Viewer to edit section content directly with Markdown, with save
-- **Word Count & Progress** — Per-section progress bar showing current/target words, line count, and estimated page count
-- **Citation Audit** — Expandable panel per section flagging unresolved `[Source: ...]` placeholders and citations missing from the bibliography
-- **Bibliography** — Auto-fetch metadata from CrossRef by DOI with retry logic, APA formatting, DOI validation
-- **Export** — Generate .docx files with academic formatting, page breaks between chapters, auto-generated References chapter with APA hanging indent, versioned snapshots
-- **Content Safety Scanner** — Defense-in-depth against prompt injection and exfiltration in ingested documents
-- **Startup Validation** — Config checks at launch (directory writability, Ollama reachability, API key presence)
-- **Dual Interface** — CLI REPL and Streamlit web UI with runtime LLM provider switching
+### AI Co-Authoring for Academic Research Papers
 
-## Stack
+**Built-in content safety scanning against prompt injection and data exfiltration**
 
-| Component | Technology |
-|---|---|
-| Embeddings | [Jina Embeddings v3](https://huggingface.co/jinaai/jina-embeddings-v3) (1024-dim, local GPU) |
-| Image Captioning | [Florence-2-large](https://huggingface.co/microsoft/Florence-2-large) (local GPU) |
-| Vector DB | [LanceDB](https://lancedb.com/) (local, serverless) |
-| PDF Parsing | [PyMuPDF](https://pymupdf.readthedocs.io/) |
-| LLM (default) | [Ollama](https://ollama.com/) — any local model (auto-detected) |
-| LLM (alt) | [LM Studio](https://lmstudio.ai/) (auto-detected), Claude Sonnet / Opus, OpenAI GPT-4o, OpenRouter (Gemini, etc.), HuggingFace Inference Endpoints |
-| Doc Export | python-docx (Times New Roman 12pt, 1.5 spacing, 1" margins) |
-| Web UI | [Streamlit](https://streamlit.io/) |
-| Safety Scanner | Regex + heuristic + LLM classifier (pluggable backends) |
+[![License: CC BY-NC 4.0](https://img.shields.io/badge/License-CC%20BY--NC%204.0-lightgrey.svg)](https://creativecommons.org/licenses/by-nc/4.0/)
+[![Python 3.11+](https://img.shields.io/badge/Python-3.11%2B-blue.svg)](https://www.python.org/)
+[![Streamlit](https://img.shields.io/badge/UI-Streamlit-FF4B4B.svg)](https://streamlit.io/)
 
-## Quick Start
+</div>
 
-### Prerequisites
+---
 
-- Python 3.11+
-- CUDA-capable GPU (for local embeddings and Florence-2)
-- [Ollama](https://ollama.com/) running locally (default LLM provider)
+## 🔍 The Problem
 
-### Install
+Writing academic papers requires synthesizing dozens of reference sources into structured, citation-grounded prose. Manual literature reviews are slow. Existing AI tools either hallucinate freely or can't ground their output in your actual sources.
+
+## 💡 The Solution
+
+PaperMill ingests your reference PDFs and images, stores them as vector embeddings in a local database, and uses **retrieval-augmented generation (RAG)** to draft, rewrite, and answer questions about paper sections — all grounded in your actual source material.
+
+Every claim is **source-locked** to ingested references. Conflicting sources are flagged for critical evaluation. Gaps are stated explicitly rather than filled with fabrication. The output follows scholarly conventions — APA citations, formal academic register, thematic synthesis, and a configurable paper outline from Abstract through Conclusion.
+
+> **PaperMill does not conduct original research or generate findings.** It is a writing tool: the researcher provides the sources, the research questions, and validates the output.
+
+---
+
+## 🌲 Dual Retrieval: Vector Search + Tree Search
+
+PaperMill offers two retrieval modes, toggled in the UI or CLI:
+
+| | Vector Search (default) | Tree Search |
+|---|---|---|
+| **How** | Embedding similarity via LanceDB | LLM reasons over hierarchical document structure |
+| **Speed** | Fast (local, no LLM calls) | Slower (LLM calls at index + query time) |
+| **Cost** | Free with local embeddings | API tokens per query |
+| **Best for** | Broad search across all sources | Precise questions on structured papers |
+| **Offline** | ✅ Works with Ollama | ⚠️ Quality depends on model strength |
+
+**Vector Search** chunks your PDFs into ~800-token overlapping blocks and embeds them. At query time, your question is embedded and LanceDB finds the most similar chunks via cosine distance.
+
+**Tree Search** builds a hierarchical table of contents per document — sections, subsections, page ranges, and summaries. At query time, the LLM reasons over this structure to select the most relevant sections, then fetches their full page text directly. Adapted from [VectifyAI/PageIndex](https://github.com/VectifyAI/PageIndex) (MIT License).
+
+Both modes return results in the same format — the generation pipeline works identically regardless of which mode found the chunks.
+
+---
+
+## ⚡ Core Features
+
+- **📄 PDF & Image Ingestion** — Heading-aware chunking (pdfplumber), Florence-2 caption + OCR, configurable embedding providers (Jina v3 local, Ollama, OpenAI), auto DOI extraction
+- **🌲 Dual Retrieval** — Vector search or Tree search, toggle in UI or CLI
+- **💬 RAG Chat** — Ask questions with source citations and persistent chat history
+- **✍️ Section Drafting & Rewriting** — Draft from scratch with RAG context, polish with a separate model, overwrite confirmation and one-step undo
+- **📚 Bibliography** — Auto-fetch metadata from CrossRef by DOI, APA formatting
+- **📊 Citation Audit** — Flag unresolved placeholders and missing bibliography entries per section
+- **📎 Export** — .docx with configurable academic formatting, page breaks, auto-generated References chapter with APA hanging indent
+- **🛡️ Content Safety Scanner** — Defense-in-depth against prompt injection and exfiltration (regex + heuristic + LLM classifier)
+- **🔄 5 LLM Providers** — Ollama, LM Studio, Claude, OpenAI, OpenRouter — switch at runtime. Any OpenAI-compatible API (e.g. DeepSeek V4) works via the `openai` provider by setting `OPENAI_BASE_URL`
+- **🖥️ Dual Interface** — CLI REPL and Streamlit web UI
+
+---
+
+## 🏗️ Architecture
+
+```
+  Reference PDFs / Images
+       │
+       ▼
+  [Content Safety Scanner] ──→ regex + heuristic + LLM classifier
+       │  (block or pass)
+       ▼
+  [pdfplumber / Florence-2] ──→ heading-aware chunking / caption+OCR
+       │
+       ▼
+  [Embeddings (Jina v3 / Ollama / OpenAI)] ──→ configurable vectors
+       │
+       ▼
+  [LanceDB] ──→ local vector database (no server needed)
+       │
+       ├── Vector Search ──→ top-k similar chunks (cosine distance)
+       │        OR
+       └── Tree Search ───→ LLM reasons over document structure index
+                │
+                ▼
+  [Ollama / Claude / OpenAI / OpenRouter] ──→ source-locked generation
+       │
+       ▼
+  [python-docx] ──→ formatted .docx with References chapter
+```
+
+---
+
+## 🚀 Quick Start
+
+### 1. Install
 
 ```bash
-git clone https://github.com/cr231521/PaperMill.git
+git clone https://github.com/andrei-majer/PaperMill.git
 cd PaperMill
 pip install -r requirements.txt
 ```
 
-### Pull an Ollama model
+### 2. Pull an Ollama model
 
 ```bash
 ollama pull llama3.1
-ollama pull gemma3:12b
+ollama pull gemma4:e4b
 ```
 
-### Run
+### 3. Run
 
-**CLI:**
 ```bash
-python run_cli.py
+python run_streamlit.py    # Web UI → http://localhost:8501
+python run_cli.py          # CLI mode
 ```
 
-**Streamlit:**
-```bash
-python run_streamlit.py
-```
+<details>
+<summary><b>Prerequisites</b></summary>
 
-## Usage
+- Python 3.11+
+- GPU for local embeddings and Florence-2 (CUDA on Windows/Linux, Metal on Apple Silicon)
+- [Ollama](https://ollama.com/) running locally (default LLM provider)
+
+</details>
+
+<details>
+<summary><b>Apple Silicon (Mac Mini M3)</b></summary>
+
+Runs without code changes. Ollama and LM Studio both have native ARM builds with Metal acceleration.
+
+| Config | RAM estimate |
+|---|---|
+| OS + Streamlit + LanceDB | ~2–3 GB |
+| Jina v3 embeddings (local) | ~600 MB |
+| Ollama llama3.1:8b Q4 | ~4.7 GB |
+| Ollama gemma4:e4b Q4 | ~7–8 GB |
+
+On 16 GB unified memory, `llama3.1:8b` (draft) + `gemma4:e4b` (polish) is workable but tight. For comfortable headroom, use a cloud provider (Claude, OpenAI, OpenRouter) which requires no local model RAM.
+
+</details>
+
+---
+
+## 📖 Usage
 
 ### CLI Commands
 
 ```
 /ingest [path]           Ingest a PDF (default: all in data/pdfs/)
 /ingest-images [path]    Ingest images (default: all in data/images/)
-/sources                 List ingested sources
+/sources                 List ingested sources (shows [tree] tag)
 /delete-source <name>    Delete a source from the vector DB
+/mode [vector|tree]      Show or set retrieval mode
+/tree-build <name>       Build tree index for a source (on-demand)
+/tree-delete <name>      Delete tree index for a source
+/tree-sources            List sources with tree indexes
 /outline                 Show paper outline with draft status
 /draft <id>              Draft a section (e.g. /draft ch1)
 /rewrite <id>            Rewrite a section with the polish model
@@ -92,58 +175,44 @@ python run_streamlit.py
 /clear-history           Clear persistent chat history
 ```
 
-Free text input triggers RAG-powered chat with source citations. Chat history persists across restarts.
+Free text input triggers RAG-powered chat using the current retrieval mode.
 
 ### Draft vs Rewrite
 
-| Action | What it does | Model used | Input | Output status |
+| Action | What it does | Model | Input | Output |
 |---|---|---|---|---|
-| **Draft** | Generates a section from scratch using retrieved reference chunks and bibliography | Draft model (e.g., Ollama, Sonnet, GPT-4o) | Section title + top 12 RAG chunks | `draft` |
-| **Rewrite** | Takes the existing draft text and improves clarity, flow, and academic rigour | Polish model (e.g., Opus, GPT-4o) | Current section text + top 8 RAG chunks | `review` |
+| **Draft** | Generate from scratch using RAG context | Draft (Sonnet, GPT-4o, Ollama) | Section title + top 12 chunks | `draft` |
+| **Rewrite** | Improve clarity, flow, and academic rigour | Polish (Opus, GPT-4o, Ollama) | Current text + top 8 chunks | `review` |
 
-**Safety features:**
-- **Overwrite confirmation** — If a section already has content, Draft and Rewrite show a warning and require explicit confirmation before proceeding
-- **Undo** — Every Draft or Rewrite backs up the previous version. Click Undo to restore it (one level of undo per section)
+Both include **overwrite confirmation** and **one-step undo**.
 
 ### Streamlit UI
 
-The web interface provides the same functionality with:
-- LLM provider switcher (Ollama / LM Studio / Claude / OpenAI / OpenRouter) in the sidebar
-- Auto-detected model selection for Ollama and LM Studio (separate Draft / Polish dropdowns)
-- File upload for PDFs and images
-- Section drafting, rewriting, and undo
-- Bibliography management
-- Content scanner dashboard (rules, reports, quarantine)
-- Performance stats after each generation (provider, model, tok/s, tokens, time, context size)
-- Inline section editor with Write mode toggle
-- Word count progress bar with line count and estimated page count
-- Citation audit per section
-- Single section .docx export
+The web interface provides:
 
-## Content Safety Scanner
+- **Sidebar:** LLM provider switcher, embedding settings, paper sections manager, export settings, bibliography, source management with tree index controls, content scanner dashboard
+- **Chat tab:** Research chat with retrieval mode toggle (Vector/Tree), source citations, persistent history
+- **Section Viewer:** Read/edit drafted sections, word count progress, citation audit, single section export
 
-The scanner protects the RAG pipeline against prompt injection and data exfiltration hidden in ingested documents.
+---
 
-### Defense Points
+## 🛡️ Content Safety Scanner
+
+Defense-in-depth against prompt injection and data exfiltration in ingested documents.
 
 | Gate | When | Method |
 |---|---|---|
-| **Ingestion (PDF)** | Before embedding | Structural scan + metadata scan + per-chunk content scan |
+| **Ingestion (PDF)** | Before embedding | Structure + metadata + per-chunk content scan |
 | **Ingestion (Image)** | Before embedding | OCR/caption divergence check + content scan |
 | **Retrieval** | Before LLM context | Regex-only scan on retrieved chunks |
-| **Chat input** | Before query | Regex-only scan with chat scope (warnings, not hard block) |
+| **Chat input** | Before query | Regex-only scan (warnings, not hard block) |
 
-### How It Works
+**Three backends:** RegexBackend (15 evasion-resistant patterns), HeuristicBackend (imperative/pronoun density scoring), OllamaClassifierBackend (LLM escalation, fail-closed). Pluggable via `ScannerBackend` base class.
 
-1. **RegexBackend** — 15 patterns detecting role hijacking, system prompt leaks, delimiter injection, instruction overrides, and exfiltration attempts. Supports evasion-resistant "super-cleaned" matching for spaced-out text (`i g n o r e` -> `ignore`)
-2. **HeuristicBackend** — Scores text on imperative command density and second-person pronoun density (0.0-1.0 suspicion score)
-3. **OllamaClassifierBackend** — LLM-based classifier, triggered when heuristic score exceeds threshold. **Fail-closed**: blocks on parse errors or connection failures
+<details>
+<summary><b>Scanner rules example</b></summary>
 
-Blocked files are quarantined and a Markdown report is generated. Files can be released from quarantine via CLI or Streamlit UI.
-
-### Scanner Rules
-
-Rules are stored in `data/scanner_rules.json` — inspectable and editable without code changes:
+Rules stored in `data/scanner_rules.json` — inspectable and editable:
 
 ```json
 {
@@ -156,27 +225,45 @@ Rules are stored in `data/scanner_rules.json` — inspectable and editable witho
 }
 ```
 
-### Extensibility
+</details>
 
-The scanner uses a pluggable `ScannerBackend` base class. Future backends (NeMo Guardrails, Llama Guard) can be added without modifying existing code.
+---
 
-## Project Structure
+## 🗂️ Stack
+
+| Component | Technology |
+|---|---|
+| Embeddings | [Jina v3](https://huggingface.co/jinaai/jina-embeddings-v3) (local GPU), Ollama, or OpenAI |
+| Image Captioning | [Florence-2-large](https://huggingface.co/microsoft/Florence-2-large) (local GPU) |
+| Vector DB | [LanceDB](https://lancedb.com/) (local, serverless) |
+| PDF Parsing | [pdfplumber](https://github.com/jsvine/pdfplumber) + [pypdf](https://github.com/py-pdf/pypdf) |
+| LLM | [Ollama](https://ollama.com/), [LM Studio](https://lmstudio.ai/), Claude, OpenAI, OpenRouter |
+| Doc Export | python-docx |
+| Web UI | [Streamlit](https://streamlit.io/) |
+| Safety Scanner | Regex + heuristic + LLM classifier |
+
+---
+
+## 📁 Project Structure
 
 ```
 PaperMill/
 ├── config.py                  # All configuration constants
 ├── run_cli.py                 # CLI entry point
+├── run_streamlit.py           # Streamlit entry point
 ├── core/
 │   ├── scanner.py             # Content safety scanner
 │   ├── ingestion.py           # PDF ingestion pipeline
 │   ├── image_ingestion.py     # Image ingestion (Florence-2)
 │   ├── retrieval.py           # Vector search with safety gate
+│   ├── tree_index.py          # Tree-based document indexing (PageIndex)
+│   ├── tree_retrieval.py      # Tree-based retrieval with LLM reasoning
 │   ├── generation.py          # LLM generation (chat, draft, rewrite)
-│   ├── embedder.py            # Jina v3 embedding
+│   ├── embedder.py            # Embedding (Jina v3 / Ollama / OpenAI)
 │   ├── db.py                  # LanceDB schema and helpers
 │   ├── bibliography.py        # DOI lookup, APA formatting
 │   ├── prompts.py             # System prompt and templates
-│   ├── paper_structure.py     # 41-section paper outline
+│   ├── paper_structure.py     # Paper outline management
 │   ├── docexport.py           # .docx export
 │   └── versioning.py          # Snapshot versioning
 ├── interfaces/
@@ -187,59 +274,106 @@ PaperMill/
 │   ├── images/                # Images for ingestion
 │   ├── references.json        # Bibliography entries
 │   ├── scanner_rules.json     # Scanner regex patterns
-│   └── scanner_allowlist.json # Allowlisted file hashes
+│   ├── scanner_allowlist.json # Allowlisted file hashes
+│   └── tree_indexes/          # Per-PDF tree structure indexes
 ├── reports/                   # Safety scan reports
 ├── quarantine/                # Blocked files
 ├── paper_sections/            # Section drafts (JSON)
 ├── versions/                  # Versioned .docx snapshots
-├── tests/                     # 50 tests
-└── requirements.txt
+└── tests/                     # Test suite
 ```
 
-## Testing
+---
 
-```bash
-python -m pytest tests/ -v
-```
+## ⚙️ Configuration
 
-50 tests covering all scanner components: data structures, normalization, regex matching, heuristic scoring, LLM classifier (mocked), pipeline orchestration, PDF structural/metadata scanning, report generation, scan history, quarantine, OCR divergence, ingestion integration, retrieval gate, and chat input scanning.
-
-## Configuration
-
-Key settings in `config.py`:
+<details>
+<summary><b>Key settings in config.py</b></summary>
 
 | Setting | Default | Description |
 |---|---|---|
 | `LLM_PROVIDER` | `ollama` | `ollama`, `lmstudio`, `claude`, `openai`, or `openrouter` |
 | `OLLAMA_DRAFT_MODEL` | `llama3.1:latest` | Ollama model for drafting and chat |
-| `OLLAMA_POLISH_MODEL` | `gemma3:12b` | Ollama model for rewriting |
+| `OLLAMA_POLISH_MODEL` | `gemma4:e4b` | Ollama model for rewriting |
 | `LMSTUDIO_URL` | `http://localhost:1234/v1` | LM Studio API endpoint |
-| `OPENAI_DRAFT_MODEL` | `gpt-4o` | OpenAI model for drafting |
+| `OPENAI_BASE_URL` | *(empty)* | Override OpenAI base URL — point at any OpenAI-compatible API (e.g. `https://api.deepseek.com/v1` for DeepSeek V4; same key/model vars, no code changes) |
+| `OPENAI_DRAFT_MODEL` | `gpt-5.4-mini` | OpenAI model for drafting (e.g. `deepseek-v4-flash`) |
 | `OPENROUTER_DRAFT_MODEL` | `google/gemini-2.5-flash-preview` | OpenRouter model for drafting |
+| `EMBEDDING_PROVIDER` | `local` | `local`, `ollama`, or `openai` |
 | `SCANNER_LLM_ESCALATION` | `True` | Enable LLM classifier escalation |
 | `SCANNER_SUSPICION_THRESHOLD` | `0.6` | Heuristic score to trigger LLM |
-| `SCANNER_MAX_LLM_ESCALATIONS` | `10` | Max LLM calls per file |
 | `SCANNER_DRY_RUN` | `False` | Log threats without blocking |
-| `SCANNER_SCAN_CHAT_INPUT` | `True` | Scan user chat messages |
 | `MAX_CONTEXT_TOKENS` | `180000` | Max tokens before prompt truncation |
-| `PAPER_TITLE` | *(your thesis title)* | Title used in prompts and .docx export |
+| `PAPER_TITLE` | *(your paper title)* | Title used in prompts and .docx export |
 
-## Security
+</details>
+
+---
+
+## 🧪 Testing
+
+```bash
+python -m pytest tests/ -v
+```
+
+---
+
+## 🔒 Security
 
 - SQL injection protection on all LanceDB WHERE clauses
-- Chunk text escaped in prompt templates (fenced code blocks) to prevent prompt injection via ingested content
-- Ollama error handling with clear messages on connection failures
-- Token count estimation with automatic truncation to prevent context overflow
+- Chunk text escaped in prompt templates (fenced code blocks)
+- Token count estimation with automatic truncation
 - DOI format validation before CrossRef API calls
+- Fail-closed LLM classifier — blocks on parse/connection failures
+- Upload size limit — 20 MB per PDF
 
-## AI Acknowledgment
+---
+
+## 🤖 AI Acknowledgment
 
 This project was co-developed with **Claude (Anthropic)** for code generation and review. At runtime, the tool uses **Ollama / Claude** for RAG-powered drafting and content safety classification. All code was reviewed, tested, and validated by the author.
 
-**Suggested thesis disclosure:**
+**Suggested paper disclosure:**
 
-> Portions of this manuscript were drafted using PaperMill, a RAG tool that synthesizes content from ingested references using [Ollama/Claude]. All AI-assisted drafts were verified against primary sources and revised by the author. The AI did not generate original findings or conclusions. Source code: https://github.com/cr231521/PaperMill.
+> Portions of this manuscript were drafted using PaperMill, a RAG tool that synthesizes content from ingested references using [Ollama/Claude]. All AI-assisted drafts were verified against primary sources and revised by the author. The AI did not generate original findings or conclusions. Source code: https://github.com/andrei-majer/PaperMill.
 
-## License
+---
+
+## ⭐ Support
+
+Leave a star 🌟 if you find PaperMill useful for your research!
+
+### Citation
+
+If you use PaperMill in your work, please cite:
+
+```
+Andrei Majer, "PaperMill: AI Co-Authoring for Academic Research Papers", 2026.
+https://github.com/andrei-majer/PaperMill
+```
+
+```bibtex
+@software{PaperMill,
+  author = {Andrei Majer},
+  title = {PaperMill: AI Co-Authoring for Academic Research Papers},
+  year = {2026},
+  url = {https://github.com/andrei-majer/PaperMill},
+  license = {CC-BY-NC-4.0}
+}
+```
+
+---
+
+## 📄 License
 
 [CC BY-NC 4.0](https://creativecommons.org/licenses/by-nc/4.0/) — Free for academic and personal use with attribution. Commercial use requires permission.
+
+---
+
+<div align="center">
+
+© 2026 Andrei Majer
+
+[![GitHub](https://img.shields.io/badge/GitHub-andrei--majer-181717?logo=github)](https://github.com/andrei-majer/PaperMill) [![LinkedIn](https://img.shields.io/badge/LinkedIn-Andrei%20Majer-0A66C2?logo=linkedin)](https://www.linkedin.com/in/andrei-majer/)
+
+</div>

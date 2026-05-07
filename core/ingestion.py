@@ -278,6 +278,11 @@ def ingest_pdf(pdf_path: Path, force: bool = False) -> int:
     if not force and is_already_ingested(pdf_path):
         return 0  # Already ingested
 
+    # Delete stale tree index if re-ingesting
+    if force:
+        from core.tree_index import delete_tree_index
+        delete_tree_index(pdf_path.name)
+
     # ── Scanner gate ─────────────────────────────────────────────────────
     file_hash = compute_file_hash(pdf_path)
     chunks = None  # will be set during scan or after
