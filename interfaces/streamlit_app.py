@@ -420,7 +420,8 @@ with st.sidebar:
     statuses = list_sections_status()
     status_icons = {"empty": "\u2b1c", "draft": "\U0001f4dd", "review": "\U0001f50d", "final": "\u2705"}
 
-    section_options = [f"{status_icons.get(s['status'], '\u2b1c')} {s['id']}: {s['title']}" for s in statuses]
+    _default_icon = "\u2b1c"
+    section_options = [f"{status_icons.get(s['status'], _default_icon)} {s['id']}: {s['title']}" for s in statuses]
     selected_idx = st.selectbox(
         "Select section",
         range(len(section_options)),
