@@ -1,0 +1,49 @@
+# Scanner artifacts
+reports/*.md
+reports/retrieval_flags.log
+reports/scan_history.json
+reports/scan_history.json.lock
+quarantine/
+
+# Data — PDFs, images, and user content (keep structure via .gitkeep)
+data/pdfs/*.pdf
+data/images/
+paper_sections/
+versions/
+
+# Python
+__pycache__/
+*.pyc
+*.egg-info/
+.pytest_cache/
+*.pyo
+venv/
+.venv/
+dist/
+build/
+docs/
+
+# Environment / secrets
+.env
+*.key
+credentials.*
+
+# Chat history & settings (user data — may contain API keys)
+data/chat_history.json
+data/settings.json
+data/tree_indexes/
+
+# Project notes
+TODO.md
+
+# DevRAG (local development tool, not for distribution)
+devrag_mcp.py
+
+# IDE / tool workspaces
+.claude/
+.superpowers/
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
